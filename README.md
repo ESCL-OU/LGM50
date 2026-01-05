@@ -3,7 +3,7 @@ DFN | SPMe | ECM Simulation of LGM50
 
 # Install Requirements
 
-We make use of [CasADi](https://web.casadi.org/) for the symbolic variables to be integrated with MPC and optimal control methods. 
+We make use of [CasADi](https://web.casadi.org/) for the symbolic variables to allow models to be utilized in MPC and optimal control methods. 
 So to run the simulations you will need to install [CasADi](https://web.casadi.org/) framework.
 To install [CasADi](https://web.casadi.org/):
 
