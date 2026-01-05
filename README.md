@@ -15,6 +15,7 @@ Unzip the downloaed file to a permanent location on your computer.
 addpath('<yourpath>/casadi-3.7.2-windows64-matlab2018b')
 ```
 Optionally you can also make this change permanent so you don't have to run `addpath` every time you start MATLAB. Go to **Home** tab, click **Set Path**, and add the folder there.
+
 5. Verify Installation
 
 ```
