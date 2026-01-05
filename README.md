@@ -26,6 +26,6 @@ The output should display `cos(x)` to confirm that CasADi functions are working 
 
 
 # To Run
-Simply open and run the simulation from MATLAB from the choices of sim_<Model>_CC.m in home directory
+Simply open and run the simulation from MATLAB from the choices of sim_\<model\>_\<current profile\>.m in home directory
 
 
