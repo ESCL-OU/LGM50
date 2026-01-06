@@ -269,7 +269,7 @@ for k = 1:Nt-1
 end
 ```
 
-For more detailed SPMe equations and derivations, refer to Scott Moura’s original SPMeT repository [`SPMeT`](https://github.com/scott-moura/SPMeT) and the associated publications cited in `SPMe/SPMe.m`.
+For more detailed SPMe equations and derivations, refer to Scott Moura’s original SPMeT repository [`SPMeT`](https://github.com/scott-moura/SPMeT).
 
 
 # Using the ECM (Equivalent Circuit Model)
@@ -304,15 +304,13 @@ for k = 1:Nt-1
 end
 ```
 
-For background and identification procedures, please refer to Scott Moura’s ECM examples and literature (e.g., dynamic OCV + RC network models commonly used in automotive BMS).
-
 
 # LG M50 cell description
 
 The models in this repository are parameterized for **LG’s M50** lithium‑ion cell, a high‑energy‑density **21700‑format** cylindrical cell (approx. 21 mm diameter, 70 mm length) with a nominal capacity of about **5 Ah** and nominal voltage around **3.6–3.7 V**.
 
 - **Chemistry and use case**
-  - The cell employs a **graphite negative electrode** and a layered oxide **nickel‑rich positive electrode** (e.g., NMC/NCA‑type), representative of modern high‑energy automotive cells.
+  - The cell employs a **graphite negative electrode** and a layered oxide **nickel‑rich positive electrode** (NMC‑type), representative of modern high‑energy automotive cells.
   - It is designed for **energy‑focused applications** (e.g., EV packs, stationary storage) where high specific energy is prioritized over extreme power capability.
 
 - **Parameterization in this repository**
