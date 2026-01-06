@@ -238,7 +238,7 @@ The Single Particle Model with electrolyte (SPMe) provides a **reduced‑order a
 
 - **Key differences from DFN**
   - Each electrode is represented by a **single representative particle** (rather than many particles along the electrode thickness).
-  - The electrolyte is still modeled along the through‑thickness direction but with fewer states than the DFN.
+  - The electrolyte is still modeled along the through‑thickness direction as like DFN.
   - The model is implemented in a compact CasADi‑based class `SPMe/SPMe.m` that exposes a discrete‑time **step interface**.
   - Plating overpotential is summarized by a **scalar** `eta_pl` output (see `SPMe.m`), as opposed to the spatially distributed `eta_pl` in the DFN.
 
