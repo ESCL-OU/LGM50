@@ -314,6 +314,5 @@ The models in this repository are parameterized for **LG’s M50** lithium‑ion
   - It is designed for **energy‑focused applications** (e.g., EV packs, stationary storage) where high specific energy is prioritized over extreme power capability.
 
 - **Parameterization in this repository**
-  - Geometric, transport, and kinetic parameters are defined in `param/params_LGM50.m`.
+  - Geometric, transport, and kinetic parameters are defined in `param/params_LGM50.m`. Those parameters are based on [J. Electrochem. Soc. 167, 110559 (2020)](https://iopscience.iop.org/article/10.1149/1945-7111/ab9050) and [Phys. Chem. Chem. Phys. 24, 8661–8677 (2022)](https://pubs.rsc.org/en/content/articlelanding/2022/cp/d2cp00417h).
   - Initial condition files in `init_models/` and data in `param/` (e.g., OCV curves) are calibrated so that DFN, SPMe, and ECM simulations reflect the voltage, SOC, and dynamic behavior of the LG M50 cell under typical operating conditions.
-
