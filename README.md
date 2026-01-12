@@ -3,6 +3,20 @@ DFN | SPMe | ECM Simulation of LGM50
 
 This repository is based on and extends the DFN implementation in [fastDFN](https://github.com/scott-moura/fastDFN) and the SPMe implementation in [SPMeT](https://github.com/scott-moura/SPMeT), with only minor modifications to those original codes. We gratefully acknowledge and thank **Dr. Scott Moura** and collaborators for making these high-quality reference implementations publicly available.
 
+## Modifications relative to fastDFN and SPMeT
+
+- **DFN implementation (based on `fastDFN` [3])**
+  - **Initialization of concentrations**: the original `fastDFN` code initializes electrode and electrolyte concentrations using `init_cs(p, v)`. In this repository, concentrations are instead initialized from:
+    - experimentally derived concentration levels corresponding to specific SOC values, as reported in [1] and [2], or
+    - steady-state DFN simulations at the desired SOC level.
+  - **Thermal dynamics switch**: a parameter flag (e.g., `disable_thermal`) has been added so that the thermal dynamics in the DFN model from [3] can be turned on or off, enabling both isothermal and electrochemical–thermal simulations with a single code base.
+
+- **SPMe implementation (based on `SPMeT` [4])**
+  - **Thermal dynamics removed**: only the electrochemical SPMe model from the original SPMeT repository is used; its thermal dynamics are neglected here.
+  - **SEI layer growth neglected**: SEI growth dynamics present in the SPMeT model of [4] are ignored in this implementation.
+  - **CasADi-based class formulation**: the SPMe model has been refactored into a CasADi-based MATLAB class `SPMe/SPMe.m` that encapsulates parameter loading, state initialization, single-step integration, and voltage/output functions that were originally distributed across multiple scripts in [4].
+  - **Initialization of concentrations**: similar to the DFN case, initial solid and electrolyte concentrations are no longer obtained via `init_cs(p, v)`, but are instead set from experimentally based concentration levels derived from [1] and [2] or from simulated profiles at the corresponding SOC level.
+
 # Install Requirements
 
 We make use of [CasADi](https://web.casadi.org/) for the symbolic variables to allow models to be utilized in MPC and optimal control methods. 
@@ -316,3 +330,11 @@ The models in this repository are parameterized for **LG’s M50** lithium‑ion
 - **Parameterization in this repository**
   - Geometric, transport, and kinetic parameters are defined in `param/params_LGM50.m`. Those parameters are based on [J. Electrochem. Soc. 167, 110559 (2020)](https://iopscience.iop.org/article/10.1149/1945-7111/ab9050) and [Phys. Chem. Chem. Phys. 24, 8661–8677 (2022)](https://pubs.rsc.org/en/content/articlelanding/2022/cp/d2cp00417h).
   - Initial condition files in `init_models/` and data in `param/` (e.g., OCV curves) are calibrated so that DFN, SPMe, and ECM simulations reflect the voltage, SOC, and dynamic behavior of the LG M50 cell under typical operating conditions.
+
+
+# References
+
+[1] C.-H. Chen, F. B. Planella, K. O’Regan, D. Gastol, W. D. Widanage, and E. Kendrick, “Development of Experimental Techniques for Parameterization of Multi-scale Lithium-ion Battery Models,” *J. Electrochem. Soc.*, 167(8):080534, 2020. doi:10.1149/1945-7111/ab9050.  
+[2] S. E. J. O’Kane, W. Ai, G. Madabattula, D. Alonso-Alvarez, R. Timms, V. Sulzer, J. S. Edge, B. Wu, G. J. Offer, and M. Marinescu, “Lithium-ion battery degradation: how to model it,” *Phys. Chem. Chem. Phys.*, 24:7909–7922, 2022. doi:10.1039/D2CP00417H.  
+[3] S. Moura, H. Perez, Z. Gima, S. Park, and D. Zhang, “Open software for electrochemical battery modeling, estimation, and control,” *ECS Meeting Abstracts*, 2018, associated with the `fastDFN` code base.  
+[4] S. J. Moura, F. B. Argomedo, R. Klein, A. Mirtabatabaei, and M. Krstic, “Battery State Estimation for a Single Particle Model With Electrolyte Dynamics,” *IEEE Trans. Control Syst. Technol.*, 25(2):453–468, 2017. doi:10.1109/TCST.2016.2571663.
