@@ -3,6 +3,11 @@ DFN | SPMe | ECM Simulation of LGM50
 
 This repository is based on and extends the DFN implementation in [fastDFN](https://github.com/scott-moura/fastDFN) and the SPMe implementation in [SPMeT](https://github.com/scott-moura/SPMeT), with only minor modifications to those original codes. We gratefully acknowledge and thank **Dr. Scott Moura** and collaborators for making these high-quality reference implementations publicly available.
 
+## License
+
+This repository incorporates code from the SPMeT project, which is licensed under the GNU General Public License version 3 (GPL‑3.0). In accordance with the GPL‑3.0’s copyleft requirements, **this project is distributed under the terms of the GNU General Public License v3.0**, as provided in the `LICENSE` file. By using, modifying, or redistributing this code, you agree to the terms of the GPL‑3.0.
+
+
 ## Modifications relative to fastDFN and SPMeT
 
 - **DFN implementation (based on `fastDFN` [3])**
