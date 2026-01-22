@@ -19,9 +19,9 @@ function [V, varargout] = nonlinearSPMeOutputVoltage(p,c_ss_n,c_ss_p, c_ex,I)
     ce0p = c_ex(end);
 
     % Average electrolyte concentrations
-    cen_bar = mean(c_ex(1:p.Nxn+1));
-    ces_bar = mean(c_ex((p.Nxn+1):(p.Nxn+p.Nxs+1)));
-    cep_bar = mean(c_ex((p.Nxn+p.Nxs+1):(p.Nxn+p.Nxs+p.Nxp+1)));
+    cen_bar = sum(c_ex(1:p.Nxn+1)) / (p.Nxn+1);
+    ces_bar = sum(c_ex((p.Nxn+1):(p.Nxn+p.Nxs+1))) / (p.Nxs+1);
+    cep_bar = sum(c_ex((p.Nxn+p.Nxs+1):(p.Nxn+p.Nxs+p.Nxp+1))) / (p.Nxp+1);
 
     % ce_bar = zeros(p.Nx,1);
     ce_bar = casadi.MX.ones(p.Nx, 1);
