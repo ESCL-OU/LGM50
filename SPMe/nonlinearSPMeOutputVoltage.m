@@ -1,7 +1,7 @@
 %% Nonlinear output for SPMe voltage
 %   Created April 28, 2025 by Wonoo Choo
 
-function [V, varargout] = nonlinearSPMeOutputVoltage(p,c_ss_n,c_ss_p, c_ex,I)
+function [V, varargout] = nonlinearSPMeOutputVoltage(p,c_ss_n,c_ss_p, c_ex,I, varargin)
 
     % Stochiometric Concentration Ratio
     theta_n = c_ss_n / p.c_s_n_max;
@@ -32,11 +32,21 @@ function [V, varargout] = nonlinearSPMeOutputVoltage(p,c_ss_n,c_ss_p, c_ex,I)
     [i_0n,i_0p] = exch_cur_dens(p,c_ss_n,c_ss_p,ce_bar,p.T_amb);
     RTaF=(p.R*p.T_amb)/(p.alph*p.Faraday);
     
+    % Optional SEI thickness state [m]
+    if nargin >= 6
+        delta_sei = varargin{1};
+    else
+        delta_sei = 0;
+    end
+
+    R_tot_n = p.R_f_n + delta_sei/p.kappa_P;
+    R_tot_p = p.R_f_p;
+
     % Voltage
     eta_n = RTaF * asinh(I / (2*p.a_s_n*p.Area_n*p.L_n*i_0n(1)));
     eta_p = RTaF * asinh(-I / (2*p.a_s_p*p.Area_p*p.L_p*i_0p(end)));
     V_noVCE =  eta_p - eta_n + Upref - Unref ...
-        - (p.R_f_n/(p.a_s_n*p.L_n*p.Area_n) + p.R_f_p/(p.a_s_p*p.L_p*p.Area_p))*I;
+        - (R_tot_n/(p.a_s_n*p.L_n*p.Area_n) + R_tot_p/(p.a_s_p*p.L_p*p.Area_p))*I;
     
     % Overpotentials due to electrolyte subsystem
     kap_n = electrolyteCond(p, cen_bar, p.T_amb);

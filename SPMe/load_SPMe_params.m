@@ -18,16 +18,33 @@
 %   Modified Feb 7, 2025 by Yuichi Kajiura (line specified as "YK modified")
 %   Modified Feb 24, 2025 by Wonoo Choo to be modelled using CasADi
 
-function p = load_SPMe_params(init_SOC, t_amb, load_init, Nr, delta_t, Nxn, Nxs, Nxp, disable_thermal, disable_sei)
+function p = load_SPMe_params(init_SOC, t_amb, Nr, delta_t, Nxn, Nxs, Nxp, disable_thermal, degradation_model, electrolyte_model)
 %% Electrochemical Model Parameters
 % Load Lithium Cobolt Oxide Params, adopted from DUALFOIL
-run param\params_LGM50
+run param/params_LGM50
 
-%% Set ambient temp and if use thermal/sei dynamics 
+if ~isscalar(init_SOC) || init_SOC < 0 || init_SOC > 1
+    error('init_SOC must be a scalar in [0, 1].');
+end
+
+%% Set ambient temp and thermal dynamics switch
 p.T_amb = t_amb + 273.15;
 p.disable_thermal = disable_thermal;
-p.disable_sei = disable_sei;
 p.delta_t = delta_t;
+if nargin < 9 || isempty(degradation_model)
+    degradation_model = 'none';
+end
+p.degradation_model = lower(char(degradation_model));
+if ~ismember(p.degradation_model, {'none', 'ramadass', 'yang'})
+    error('degradation_model must be one of: none, ramadass, yang.');
+end
+if nargin < 10 || isempty(electrolyte_model)
+    electrolyte_model = 'fdm';
+end
+p.electrolyte_model = lower(char(electrolyte_model));
+if ~ismember(p.electrolyte_model, {'fdm', 'fvm'})
+    error('electrolyte_model must be one of: fdm, fvm.');
+end
 
 %% Input charge/discharge Current Data %%
 % % Current | Positive <=> Discharge, Negative <=> Charge
@@ -66,36 +83,18 @@ disp(' ');
 
 
 %%% INITIAL CONDITIONS
-if load_init 
-    % Loads Initial conditions c_n0 c_p0 c_e0 V0
-    disp("spme_0.1C_" + string(init_SOC) + "SOC.mat")
-    load("init_models\spme_0.1C_" + string(init_SOC) + "SOC.mat", 'c_n0', 'c_p0', 'c_e0', 'V0');
+repo_dir = fileparts(fileparts(mfilename('fullpath')));
+addpath(repo_dir);
+calc = calculate_equilibrium_voltage_from_soc(init_SOC);
+[csn0, csp0] = init_cs(p, calc.Veq);
+p.csn0 = csn0;
+p.csp0 = csp0;
+ce0 = p.c_e;
 
-    if length(c_n0) ~= p.Nr-1
-        c_n0 = interp1(1:length(c_n0), c_n0, linspace(1, length(c_n0), p.Nr-1)).';
-    end
-    if length(c_p0) ~= p.Nr-1
-        c_p0 = interp1(1:length(c_p0), c_p0, linspace(1, length(c_p0), p.Nr-1)).';
-    end
-    if length(c_e0) ~= p.Nx-3
-        c_e0 = interp1(1:length(c_e0), c_e0, linspace(1, length(c_e0), p.Nx-3)).';
-    end
-    % Solid concentration
-    csn0 = mean(c_n0);
-    csp0 = mean(c_p0);
-
-    % Electrolyte concentration
-    ce0 = mean(c_e0);
-else
-    csn0 = p.csn0;
-    csp0 = p.csp0;
-    ce0 = p.c_e;
-
-    c_n0 = csn0 * ones(p.Nr-1,1);
-    c_p0 = csp0 * ones(p.Nr-1,1);
-    c_e0 = ce0 * ones(p.Nx-3, 1);
-    V0 = 4.16;
-end
+c_n0 = csn0 * ones(p.Nr-1,1);
+c_p0 = csp0 * ones(p.Nr-1,1);
+c_e0 = ce0 * ones(p.Nx-3, 1);
+V0 = calc.Veq;
 
 % Temperature
 T10 = p.T_amb;
@@ -119,7 +118,7 @@ x0 = [c_n0; c_p0; c_e0];
 if ~p.disable_thermal
     x0 = [x0; T10; T20];
 end
-if ~p.disable_sei
+if ~strcmpi(char(p.degradation_model), 'none')
     x0 = [x0; delta_sei0];
 end
 p.x0 = x0;

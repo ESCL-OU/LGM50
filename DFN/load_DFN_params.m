@@ -1,65 +1,90 @@
-function p = load_DFN_params(init_SOC, t_amb, load_init, delta_t, disable_thermal, disable_sei)
+function p = load_DFN_params(init_SOC, t_amb, delta_t, disable_thermal, varargin)
 
 %% Electrochemical Model Parameters
 % Load Lithium Cobolt Oxide Params, adopted from DUALFOIL
 run param/params_LGM50
 
-%%% INITIAL CONDITIONS
-% Loads Initial conditions c_n0 c_p0 c_e0 
-if load_init
-    load("init_models\dfn_0.1C_" + string(init_SOC) + "SOC.mat", 'x0', 'z0', 'Nr', 'Nxn', 'Nxs', 'Nxp');
-    p.x0 = x0;
-    p.z0 = z0;
-    p.x0(end) = t_amb + 273.15;
-else
-    Nr = p.Nr;
-    Nxn = p.Nxn;
-    Nxs = p.Nxs;
-    Nxp = p.Nxp;
-    csn0 = p.csn0;
-    csp0 = p.csp0;
-
-    c_s_n0 = zeros(p.PadeOrder,1);
-    c_s_p0 = zeros(p.PadeOrder,1);
-
-    %%%%% Initial condition based on Jordan form
-    c_s_n0(3) = csn0;
-    c_s_p0(3) = csp0;
-
-    c_s_n = repmat(c_s_n0, [p.Nxn-1 1]);
-    c_s_p = repmat(c_s_p0, [p.Nxp-1 1]);
-
-    % Electrolyte concentration
-    c_e = p.c_e * ones(p.Nx-3,1);
-
-    % Temperature
-    T = t_amb + 273.15;
-
-    % Solid Potential
-    Uref_n0 = refPotentialAnode(p, csn0(1)*ones(p.Nxn-1,1) / p.c_s_n_max);
-    Uref_p0 = refPotentialCathode(p, csp0(1)*ones(p.Nxp-1,1) / p.c_s_p_max);
-
-    phi_s_n = Uref_n0;
-    phi_s_p = Uref_p0;
-
-    % Electrolyte Current
-    i_en = zeros(p.Nxn-1,1);
-    i_ep = zeros(p.Nxp-1,1);
-
-    % Electrolyte Potential
-    phi_e = zeros(p.Nx-1,1);
-
-    % Molar Ionic Flux
-    jn = zeros(p.Nxn-1,1);
-    jp = zeros(p.Nxp-1,1);
-
-    % Initial Conditions
-    p.x0 = [c_s_n; c_s_p; c_e; T];
-
-    p.z0 = [phi_s_n; phi_s_p; i_en; i_ep;...
-            phi_e; jn; jp];
+if ~isscalar(init_SOC) || init_SOC < 0 || init_SOC > 1
+    error('init_SOC must be a scalar in [0, 1].');
 end
-% Get it to also load Nr, Nxn, Nxs, Nxp saved in the file
+
+% Optional discretization override:
+% load_DFN_params(..., Nr, Nxn, Nxs, Nxp)
+Nr_opt = p.Nr;
+Nxn_opt = p.Nxn;
+Nxs_opt = p.Nxs;
+Nxp_opt = p.Nxp;
+if numel(varargin) >= 4
+    if ~isempty(varargin{1}), Nr_opt = varargin{1}; end
+    if ~isempty(varargin{2}), Nxn_opt = varargin{2}; end
+    if ~isempty(varargin{3}), Nxs_opt = varargin{3}; end
+    if ~isempty(varargin{4}), Nxp_opt = varargin{4}; end
+end
+
+%%% INITIAL CONDITIONS
+Nr = Nr_opt;
+Nxn = Nxn_opt;
+Nxs = Nxs_opt;
+Nxp = Nxp_opt;
+
+% Apply discretization first so all downstream matrices/states are consistent.
+p.Nr = Nr;
+p.Nxn = Nxn;
+p.Nxs = Nxs;
+p.Nxp = Nxp;
+p.Nx = p.Nxn+p.Nxs+p.Nxp;
+p.delta_r_n = 1/p.Nr;
+p.delta_r_p = 1/p.Nr;
+p.delta_x_n = 1 / p.Nxn;
+p.delta_x_s = 1 / p.Nxs;
+p.delta_x_p = 1 / p.Nxp;
+
+% Initialize from intended SoC via SoC->Veq->init_cs.
+repo_dir = fileparts(fileparts(mfilename('fullpath')));
+addpath(repo_dir);
+calc = calculate_equilibrium_voltage_from_soc(init_SOC);
+[csn0, csp0] = init_cs(p, calc.Veq);
+p.csn0 = csn0;
+p.csp0 = csp0;
+
+c_s_n0 = zeros(p.PadeOrder,1);
+c_s_p0 = zeros(p.PadeOrder,1);
+
+%%%%% Initial condition based on Jordan form
+c_s_n0(3) = csn0;
+c_s_p0(3) = csp0;
+
+c_s_n = repmat(c_s_n0, [p.Nxn-1 1]);
+c_s_p = repmat(c_s_p0, [p.Nxp-1 1]);
+
+% Electrolyte concentration
+c_e = p.c_e * ones(p.Nx-3,1);
+
+% Temperature
+T = t_amb + 273.15;
+
+% Solid Potential
+Uref_n0 = refPotentialAnode(p, csn0(1)*ones(p.Nxn-1,1) / p.c_s_n_max);
+Uref_p0 = refPotentialCathode(p, csp0(1)*ones(p.Nxp-1,1) / p.c_s_p_max);
+
+phi_s_n = Uref_n0;
+phi_s_p = Uref_p0;
+
+% Electrolyte Current
+i_en = zeros(p.Nxn-1,1);
+i_ep = zeros(p.Nxp-1,1);
+
+% Electrolyte Potential
+phi_e = zeros(p.Nx-1,1);
+
+% Molar Ionic Flux
+jn = zeros(p.Nxn-1,1);
+jp = zeros(p.Nxp-1,1);
+
+% Initial Conditions
+p.x0 = [c_s_n; c_s_p; c_e; T];
+p.z0 = [phi_s_n; phi_s_p; i_en; i_ep; phi_e; jn; jp];
+
 %%% Finite difference for spherical particle
 p.Nr = Nr;
 p.delta_r_n = 1/p.Nr;
@@ -82,10 +107,9 @@ fprintf(1,'Order of Pade Approx for Solid Concentration : %1.0f\n',p.PadeOrder);
 fprintf(1,'Time Step : %2.2f sec\n',p.delta_t);
 disp(' ');
 
-%% Set ambient temp and if use thermal/sei dynamics (YK modified/added) 
+%% Set ambient temp and thermal dynamics switch (YK modified/added)
 p.T_amb = t_amb + 273.15;
 p.disable_thermal = disable_thermal;
-p.disable_sei = disable_sei;
 p.delta_t = delta_t;
 
 %% Input charge/discharge Current Data %%
