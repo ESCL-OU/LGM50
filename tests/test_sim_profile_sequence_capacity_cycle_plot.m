@@ -1,4 +1,4 @@
-function out = test_sim_profile_sequence_capacity_cycle_plot()
+function out = test_sim_profile_sequence_capacity_cycle_plot(degradation_model, memory_light)
 %TEST_SIM_PROFILE_SEQUENCE_CAPACITY_CYCLE_PLOT
 % Validate capacity-cycle bookkeeping in sim_profile_sequence_LGM50 using:
 %   {1/10C discharge, 1C charge, UDDS, 1/10C charge}
@@ -12,9 +12,23 @@ function out = test_sim_profile_sequence_capacity_cycle_plot()
 
     model_name = 'SPMe';
     init_soc = 0.0;
-    sequence = {'REST', 0.5, 'CC', -1.0, 'REST', 0.5, 'CC', 1.0, 'REST', 0.5, 'CC', -1.0, 'REST', 0.5, 'CC', 1.0};
-    repeat_count = 2;
-    degradation_model = 'none';
+    init_soc_charge = 0.0;
+    sequence1 = {'REST', 0.5, 'CC', -0.1, 'REST', 0.5, 'CC', 0.1};
+    sequence2 = {'CC', -1.0, 'CC', 1.0};
+    sequence1_repeat = 1;
+    sequence2_repeat = 200;
+    block_sequence = [repmat(sequence1, 1, sequence1_repeat), ...
+        repmat(sequence2, 1, sequence2_repeat)];
+    repeat_count = 11;
+    % Repeat is handled by sim_profile_sequence_LGM50 via 'Repeat'.
+    % Keep one cycle definition here to avoid double repetition.
+    sequence = block_sequence;
+    if nargin < 1 || isempty(degradation_model)
+        degradation_model = 'safari';
+    end
+    if nargin < 2 || isempty(memory_light)
+        memory_light = true;
+    end
 
     sim = sim_profile_sequence_LGM50(model_name, init_soc, sequence, ...
         'Repeat', repeat_count, ...
@@ -27,7 +41,8 @@ function out = test_sim_profile_sequence_capacity_cycle_plot()
         'DegradationModel', degradation_model, ...
         'ElectrolyteModel', 'fvm', ...
         'SaveOutput', false, ...
-        'ShowProgress', false);
+        'ShowProgress', true, ...
+        'MemoryLight', memory_light);
 
     assert(isfield(sim, 'capacity_cycle_log'), ...
         'Missing sim.capacity_cycle_log.');
@@ -38,7 +53,8 @@ function out = test_sim_profile_sequence_capacity_cycle_plot()
 
     cycle_log = sim.capacity_cycle_log;
     n_capacity_cycles = numel(cycle_log);
-    expected_cycles = repeat_count * 2;
+    % capacity_cycle counts one full charge/discharge pair as one cycle.
+    expected_cycles = repeat_count * (sequence1_repeat + sequence2_repeat);
     assert(n_capacity_cycles == expected_cycles, ...
         'Unexpected number of capacity cycles. Expected %d, got %d.', ...
         expected_cycles, n_capacity_cycles);
@@ -59,11 +75,7 @@ function out = test_sim_profile_sequence_capacity_cycle_plot()
     cycle_edges = find(diff(sim.capacity_cycle) > 0) + 1;
     cycle_switch_t = sim.time(cycle_edges);
 
-    if isfield(sim, 'spme_outputs') && isfield(sim.spme_outputs, 'delta_sei')
-        delta_sei = sim.spme_outputs.delta_sei(:);
-    else
-        delta_sei = nan(size(sim.time));
-    end
+    delta_sei = extract_delta_sei(sim, degradation_model);
     if isfield(sim, 'spme_outputs') && isfield(sim.spme_outputs, 'cen_bar')
         cen_bar = sim.spme_outputs.cen_bar(:);
     else
@@ -232,8 +244,69 @@ function out = test_sim_profile_sequence_capacity_cycle_plot()
         'Location', 'best');
     title(tl, '{0.1C discharge, 1C charge, UDDS, 0.1C charge} from SoC = 100%');
 
+    % Additional cycle-wise summary figure:
+    % left: sequence2 end-of-cycle SEI thickness, right: sequence1 discharged capacity.
+    total_cycles_per_repeat = sequence1_repeat + sequence2_repeat;
+    is_sequence1_cycle = false(n_capacity_cycles, 1);
+    is_sequence2_cycle = false(n_capacity_cycles, 1);
+    for k = 1:n_capacity_cycles
+        cyc_in_repeat = mod(cycle_id(k) - 1, total_cycles_per_repeat) + 1;
+        is_sequence1_cycle(k) = (cyc_in_repeat <= sequence1_repeat);
+        is_sequence2_cycle(k) = (cyc_in_repeat > sequence1_repeat);
+    end
+    seq1_cycle_count = repeat_count * sequence1_repeat;
+    seq1_x = (1:seq1_cycle_count).';
+    seq1_cycle_ids = cycle_id(is_sequence1_cycle);
+    seq1_capacity_ah = discharged_ah(is_sequence1_cycle);
+    seq2_cycle_count = repeat_count * sequence2_repeat;
+    seq2_x = (1:seq2_cycle_count).';
+
+    seq2_cycle_ids = cycle_id(is_sequence2_cycle);
+    seq2_capacity_ah = discharged_ah(is_sequence2_cycle);
+    seq2_delta_sei_nm = nan(seq2_cycle_count, 1);
+    for k = 1:seq2_cycle_count
+        cyc = seq2_cycle_ids(k);
+        idx_end = find(sim.capacity_cycle == cyc, 1, 'last');
+        if ~isempty(idx_end) && idx_end <= numel(delta_sei)
+            seq2_delta_sei_nm(k) = delta_sei(idx_end) * 1e9;
+        end
+    end
+
+    figure('Name', 'Cycle summary: SEI and capacity', 'Color', 'w');
+    subplot(1,2,1);
+    plot(seq2_x, seq2_delta_sei_nm, 'r-', 'LineWidth', 1.2); grid on;
+    xlim([1, seq2_cycle_count]);
+    xlabel(sprintf('Cycle count (1 to %d)', seq2_cycle_count));
+    ylabel('\delta_{sei} at cycle end [nm]');
+    title('SEI thickness per sequence2 cycle');
+
+    subplot(1,2,2);
+    plot(seq1_x, seq1_capacity_ah, 'o-b', 'LineWidth', 1.2, 'MarkerSize', 4); grid on;
+    xlim([1, seq1_cycle_count]);
+    xlabel(sprintf('Cycle count (1 to %d)', seq1_cycle_count));
+    ylabel('Discharged capacity [Ah]');
+    title('Discharged capacity per sequence1 cycle');
+
     out = struct();
-    out.sim = sim;
+    if ~memory_light
+        out.sim = sim;
+        out.delta_sei = delta_sei(:);
+        out.cen_bar = cen_bar(:);
+        out.ces_bar = ces_bar(:);
+        out.cep_bar = cep_bar(:);
+        out.cs_ave_n = cs_ave_n(:);
+        out.cs_ave_p = cs_ave_p(:);
+        out.n_e_n = n_e_n(:);
+        out.n_e_s = n_e_s(:);
+        out.n_e_p = n_e_p(:);
+        out.n_e_total = n_e_total(:);
+        out.dN_e_n_step = dN_e_n_step(:);
+        out.dN_e_s_step = dN_e_s_step(:);
+        out.dN_e_p_step = dN_e_p_step(:);
+        out.dN_s_n_step = dN_s_n_step(:);
+        out.dN_s_p_step = dN_s_p_step(:);
+        out.dN_total_step = dN_total_step(:);
+    end
     out.cycle_id = cycle_id;
     out.charged_Ah = charged_ah;
     out.discharged_Ah = discharged_ah;
@@ -251,28 +324,68 @@ function out = test_sim_profile_sequence_capacity_cycle_plot()
     out.capacity_event_dNe_mol = evt_dNe(:);
     out.capacity_event_li_residual_mol = evt_li_residual_mol(:);
     out.capacity_event_li_residual_Ah = evt_li_residual_Ah(:);
-    out.delta_sei = delta_sei(:);
-    out.cen_bar = cen_bar(:);
-    out.ces_bar = ces_bar(:);
-    out.cep_bar = cep_bar(:);
-    out.cs_ave_n = cs_ave_n(:);
-    out.cs_ave_p = cs_ave_p(:);
-    out.n_e_n = n_e_n(:);
-    out.n_e_s = n_e_s(:);
-    out.n_e_p = n_e_p(:);
-    out.n_e_total = n_e_total(:);
+    out.sequence2_cycle_x = seq2_x(:);
+    out.sequence2_cycle_ids = seq2_cycle_ids(:);
+    out.sequence2_delta_sei_nm = seq2_delta_sei_nm(:);
+    out.sequence2_capacity_Ah = seq2_capacity_ah(:);
+    out.sequence1_cycle_x = seq1_x(:);
+    out.sequence1_cycle_ids = seq1_cycle_ids(:);
+    out.sequence1_capacity_Ah = seq1_capacity_ah(:);
     out.vol_e_n = vol_e_n;
     out.vol_e_s = vol_e_s;
     out.vol_e_p = vol_e_p;
     out.vol_s_n = vol_s_n;
     out.vol_s_p = vol_s_p;
-    out.dN_e_n_step = dN_e_n_step(:);
-    out.dN_e_s_step = dN_e_s_step(:);
-    out.dN_e_p_step = dN_e_p_step(:);
-    out.dN_s_n_step = dN_s_n_step(:);
-    out.dN_s_p_step = dN_s_p_step(:);
-    out.dN_total_step = dN_total_step(:);
     out.degradation_model = degradation_model;
+    out.memory_light = memory_light;
+end
+
+function delta_sei = extract_delta_sei(sim, degradation_model)
+    if strcmpi(degradation_model, 'none')
+        delta_sei = nan(size(sim.time));
+        return;
+    end
+    if isfield(sim, 'spme_outputs') && isfield(sim.spme_outputs, 'delta_sei')
+        delta_sei = sim.spme_outputs.delta_sei(:);
+        delta_sei = align_to_time(delta_sei, sim.time);
+        return;
+    end
+    if isfield(sim, 'delta_sei') && ~isempty(sim.delta_sei)
+        delta_sei = sim.delta_sei(:);
+        delta_sei = align_to_time(delta_sei, sim.time);
+        return;
+    end
+    if strcmpi(degradation_model, 'safari') && isfield(sim, 'safari') && ...
+            isfield(sim.safari, 'state_indices') && isfield(sim, 'x') && ~isempty(sim.x)
+        idx = sim.safari.state_indices.delta_sei;
+        delta_sei = sim.x(idx, :).';
+        delta_sei = align_to_time(delta_sei, sim.time);
+        return;
+    end
+    % Legacy fallback for non-safari state layout [..; delta_sei].
+    if isfield(sim, 'x') && ~isempty(sim.x)
+        delta_sei = sim.x(end, :).';
+        delta_sei = align_to_time(delta_sei, sim.time);
+    else
+        delta_sei = nan(size(sim.time));
+    end
+end
+
+function y = align_to_time(y, t)
+    y = y(:);
+    n = numel(t);
+    if numel(y) == n
+        return;
+    end
+    if isempty(y)
+        y = nan(n, 1);
+        return;
+    end
+    if numel(y) > n
+        y = y(1:n);
+        return;
+    end
+    y = [y; y(end) * ones(n - numel(y), 1)];
 end
 
 function mark_capacity_cycle_edges(cycle_switch_t)

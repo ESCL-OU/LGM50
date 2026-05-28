@@ -18,7 +18,7 @@ function out = test_sim_profile_sequence_fuds_cc3()
     t_amb = 25;
     delta_t = 1;
     Nr = 20; Nxn = 20; Nxs = 10; Nxp = 20;
-    deg_model = 'ramadass';
+    deg_model = 'safari';
 
     sim = sim_profile_sequence_LGM50(model_name, init_soc, sequence, ...
         'Repeat', n_cycles, ...
@@ -26,11 +26,7 @@ function out = test_sim_profile_sequence_fuds_cc3()
         'Nr', Nr, 'Nxn', Nxn, 'Nxs', Nxs, 'Nxp', Nxp, ...
         'DegradationModel', deg_model, 'SaveOutput', false);
 
-    if strcmpi(deg_model, 'none')
-        delta_sei = nan(size(sim.time));
-    else
-        delta_sei = sim.x(end, :).';
-    end
+    delta_sei = extract_delta_sei(sim, deg_model);
 
     cycle_edges = find(diff(sim.segment_cycle) > 0) + 1;
     cycle_switch_t = sim.time(cycle_edges);
@@ -82,4 +78,47 @@ function mark_cycle_edges(cycle_switch_t)
         xline(cycle_switch_t(i), '--', sprintf('cycle %d', i+1), ...
             'LabelVerticalAlignment', 'bottom', 'HandleVisibility', 'off');
     end
+end
+
+function delta_sei = extract_delta_sei(sim, deg_model)
+    if strcmpi(deg_model, 'none')
+        delta_sei = nan(size(sim.time));
+        return;
+    end
+    if strcmpi(deg_model, 'safari') && isfield(sim, 'safari') && isfield(sim.safari, 'state_indices')
+        idx = sim.safari.state_indices.delta_sei;
+        delta_sei = sim.x(idx, :).';
+        delta_sei = align_to_time(delta_sei, sim.time);
+        return;
+    end
+    if isfield(sim, 'spme_outputs') && isfield(sim.spme_outputs, 'delta_sei')
+        delta_sei = sim.spme_outputs.delta_sei(:);
+        delta_sei = align_to_time(delta_sei, sim.time);
+        return;
+    end
+    if isfield(sim, 'delta_sei') && ~isempty(sim.delta_sei)
+        delta_sei = sim.delta_sei(:);
+        delta_sei = align_to_time(delta_sei, sim.time);
+        return;
+    end
+    % Legacy fallback for non-safari state layout [..; delta_sei].
+    delta_sei = sim.x(end, :).';
+    delta_sei = align_to_time(delta_sei, sim.time);
+end
+
+function y = align_to_time(y, t)
+    y = y(:);
+    n = numel(t);
+    if numel(y) == n
+        return;
+    end
+    if isempty(y)
+        y = nan(n, 1);
+        return;
+    end
+    if numel(y) > n
+        y = y(1:n);
+        return;
+    end
+    y = [y; y(end) * ones(n - numel(y), 1)];
 end

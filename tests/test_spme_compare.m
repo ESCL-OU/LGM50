@@ -1,5 +1,5 @@
-function out = test_spme_ramadass_vs_yang(model_a, model_b)
-%TEST_SPME_RAMADASS_VS_YANG Compare two SPMe degradation models.
+function out = test_spme_compare(model_a, model_b)
+%Compare two SPMe degradation models.
 
     tests_dir = fileparts(mfilename('fullpath'));
     base_dir = fileparts(tests_dir);
@@ -159,7 +159,7 @@ function out = test_spme_ramadass_vs_yang(model_a, model_b)
             'Nr', Nr, 'Nxn', Nxn, 'Nxs', Nxs, 'Nxp', Nxp, ...
             'DegradationModel', mode_name, ...
             'ElectrolyteModel', 'fdm', ...
-            'SPMeOutputs', {'j_side', 'j_sei', 'delta_sei_dot', 'eta_n_side', 'phi_se', 'eta_s'}, ...
+            'SPMeOutputs', {'j_side', 'j_sei', 'delta_sei', 'delta_sei_dot', 'eta_n_side', 'phi_se', 'eta_s', 'c_s_ec'}, ...
             'Repeat', 1, ...
             'SaveOutput', false);
 
@@ -238,17 +238,34 @@ function seg = post_compute_side_terms(sim, mode_name)
     j_sei = sim.spme_outputs.j_sei(:);
     dsei_dot = sim.spme_outputs.delta_sei_dot(:);
     dsei_dot_num = zeros(nT,1);
-    dsei = sim.x(end, :).';
+    if isfield(sim.spme_outputs, 'delta_sei')
+        dsei = sim.spme_outputs.delta_sei(:);
+    elseif isfield(sim, 'delta_sei')
+        dsei = sim.delta_sei(:);
+    else
+        dsei = sim.x(end, :).';
+    end
     obj_p_i0s = zeros(nT,1);
     eta_n_side = sim.spme_outputs.eta_n_side(:);
     phi_se = sim.spme_outputs.phi_se(:);
     eta_s = sim.spme_outputs.eta_s(:);
-    c_s_ec = nan(nT,1);
+    if isfield(sim.spme_outputs, 'c_s_ec')
+        c_s_ec = sim.spme_outputs.c_s_ec(:);
+    else
+        c_s_ec = nan(nT,1);
+    end
     for k = 1:nT
-        if strcmpi(mode_name, 'yang')
-            c_s_ec_k = j_sei(k) / sim.p.Faraday * dsei(k) / sim.p.D_ec + sim.p.c0_ec;
-            obj_p_i0s(k) = sim.p.k0_sei * c_s_ec_k * sim.p.Faraday;
-            c_s_ec(k) = c_s_ec_k;
+        if strcmpi(mode_name, 'yang') || strcmpi(mode_name, 'safari')
+            c_s_ec_k = c_s_ec(k);
+            if ~isfinite(c_s_ec_k)
+                c_s_ec_k = j_sei(k) / sim.p.Faraday * dsei(k) / sim.p.D_ec + sim.p.c0_ec;
+                c_s_ec(k) = c_s_ec_k;
+            end
+            if isfield(sim.p, 'k0_sei') && isfinite(c_s_ec_k)
+                obj_p_i0s(k) = sim.p.k0_sei * c_s_ec_k * sim.p.Faraday;
+            else
+                obj_p_i0s(k) = sim.p.i0s;
+            end
         else
             obj_p_i0s(k) = sim.p.i0s;
         end

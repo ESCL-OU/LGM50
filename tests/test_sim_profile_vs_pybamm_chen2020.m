@@ -146,11 +146,14 @@ function [ok, diag] = check_pybamm_available_external(python_exe)
 end
 
 function python_exe = resolve_python_executable()
-    preferred = '/Library/Developer/CommandLineTools/Library/Frameworks/Python3.framework/Versions/3.9/bin/python3';
-    python_exe = preferred;
-    if isfile(preferred)
+    % Prefer an explicitly requested interpreter first.
+    env_python = getenv('PYBAMM_PYTHON');
+    if ~isempty(env_python) && isfile(env_python)
+        python_exe = char(env_python);
         return;
     end
+
+    % Then prefer the interpreter currently configured in MATLAB pyenv.
     try
         pe = pyenv;
         if isprop(pe, 'Executable') && ~isempty(pe.Executable) && isfile(char(pe.Executable))
@@ -160,6 +163,14 @@ function python_exe = resolve_python_executable()
     catch
         % keep fallback
     end
+
+    % Fall back to the legacy preferred system Python.
+    preferred = '/Library/Developer/CommandLineTools/Library/Frameworks/Python3.framework/Versions/3.9/bin/python3';
+    if isfile(preferred)
+        python_exe = preferred;
+        return;
+    end
+
     python_exe = 'python3';
 end
 
