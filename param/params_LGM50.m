@@ -76,9 +76,9 @@ p.sig_p = 0.18;    % Conductivity of solid in pos. electrode, [1/Ohms*m]
 % Miscellaneous
 p.t_plus = 0.2594;       % Transference number
 p.Faraday = 96485.33212;    % Faraday's constant, [Coulumbs/mol]
-p.Area_n = 0.0997;%0.0997;%0.1033; %0.1027; 1033        % Electrode current collector area [m^2] (Is this not electrode cross-sectional area)
-p.Area_s = 0.0997;%0.0997;%0.1023; % Average of area_n and area_p
-p.Area_p = 0.0997;%0.0997;%0.1033; %0.10135;        % Electrode current collector area [m^2] (Is this not electrode cross-sectional area)
+p.Area_n = 0.1027;%0.0997;%0.1033; %0.1027; 1033        % Electrode current collector area [m^2] (Is this not electrode cross-sectional area)
+p.Area_s = 0.1027;%0.0997;%0.1023; % Average of area_n and area_p
+p.Area_p = 0.1027;%0.0997;%0.1033; %0.10135;        % Electrode current collector area [m^2] (Is this not electrode cross-sectional area)
 p.Area_ref = mean([p.Area_n, p.Area_p]);
 
 %% Kinetic Params

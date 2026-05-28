@@ -60,11 +60,26 @@ function [V, varargout] = nonlinearSPMeOutputVoltage(p,c_ss_n,c_ss_p, c_ex,I, va
     % Overpotential due to electrolyte conductivity
     V_electrolyteCond = (p.L_n/(2*kap_n_eff) + 2*p.L_s/(2*kap_s_eff) + p.L_p/(2*kap_p_eff))*I; ...
             
+    % Activity-coefficient correction toggle for electrolyte polarization.
+    use_electrolyte_activity = true;
+    if isfield(p, 'use_electrolyte_activity') && ~isempty(p.use_electrolyte_activity)
+        use_electrolyte_activity = logical(p.use_electrolyte_activity);
+    end
+    if use_electrolyte_activity
+        dfca_n = electrolyteAct(cen_bar, p.T_amb, p);
+        dfca_s = electrolyteAct(ces_bar, p.T_amb, p);
+        dfca_p = electrolyteAct(cep_bar, p.T_amb, p);
+    else
+        dfca_n = 0;
+        dfca_s = 0;
+        dfca_p = 0;
+    end
+
     % Overpotential due to electrolyte polarization
     V_electrolytePolar = (2*p.R*p.T_amb)/(p.Faraday) * ...
-                            (1 * (log(cens) - log(ce0n)) ...
-                            +1 * (log(cesp) - log(cens)) ...
-                            +1 * (log(ce0p) - log(cesp)));
+                            ((1+dfca_n) * (log(cens) - log(ce0n)) ...
+                            +(1+dfca_s) * (log(cesp) - log(cens)) ...
+                            +(1+dfca_p) * (log(ce0p) - log(cesp)));
 
     % Add 'em up!
     V = V_noVCE + V_electrolyteCond + V_electrolytePolar;

@@ -18,7 +18,7 @@
 %   Modified Feb 7, 2025 by Yuichi Kajiura (line specified as "YK modified")
 %   Modified Feb 24, 2025 by Wonoo Choo to be modelled using CasADi
 
-function p = load_SPMe_params(init_SOC, t_amb, Nr, delta_t, Nxn, Nxs, Nxp, disable_thermal, degradation_model, electrolyte_model)
+function p = load_SPMe_params(init_SOC, t_amb, Nr, delta_t, Nxn, Nxs, Nxp, disable_thermal, degradation_model, electrolyte_model, use_electrolyte_activity)
 %% Electrochemical Model Parameters
 % Load Lithium Cobolt Oxide Params, adopted from DUALFOIL
 run param/params_LGM50
@@ -35,8 +35,8 @@ if nargin < 9 || isempty(degradation_model)
     degradation_model = 'none';
 end
 p.degradation_model = lower(char(degradation_model));
-if ~ismember(p.degradation_model, {'none', 'ramadass', 'yang'})
-    error('degradation_model must be one of: none, ramadass, yang.');
+if ~ismember(p.degradation_model, {'none', 'ramadass', 'yang', 'safari'})
+    error('degradation_model must be one of: none, ramadass, yang, safari.');
 end
 if nargin < 10 || isempty(electrolyte_model)
     electrolyte_model = 'fdm';
@@ -45,6 +45,10 @@ p.electrolyte_model = lower(char(electrolyte_model));
 if ~ismember(p.electrolyte_model, {'fdm', 'fvm'})
     error('electrolyte_model must be one of: fdm, fvm.');
 end
+if nargin < 11 || isempty(use_electrolyte_activity)
+    use_electrolyte_activity = true;
+end
+p.use_electrolyte_activity = logical(use_electrolyte_activity);
 
 %% Input charge/discharge Current Data %%
 % % Current | Positive <=> Discharge, Negative <=> Charge

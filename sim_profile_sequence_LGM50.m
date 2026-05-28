@@ -14,6 +14,10 @@ function sim = sim_profile_sequence_LGM50(model_name, init_soc, profile_sequence
 %     'VMin'   : custom lower cutoff voltage [V] (default [], disabled)
 %     'VMax'   : custom upper cutoff voltage [V] (default [], disabled)
 %     'ShowProgress' : true/false for waitbar display (default true)
+%     'MemoryLight' : true/false to avoid storing large per-step state
+%                     histories (x/y/c_e/etc.) in the aggregated output
+%                     sequence; keeps only core signals + requested
+%                     optional outputs (default false)
 
     if nargin < 1 || isempty(model_name)
         model_name = 'SPMe';
@@ -44,6 +48,7 @@ function sim = sim_profile_sequence_LGM50(model_name, init_soc, profile_sequence
     addParameter(parser, 'VMax', []);
     addParameter(parser, 'ShowProgress', true);
     addParameter(parser, 'SPMeOutputs', {});
+    addParameter(parser, 'MemoryLight', false);
     parse(parser, varargin{:});
     opt = parser.Results;
     if ~isscalar(opt.Repeat) || ~isfinite(opt.Repeat) || opt.Repeat < 1 || abs(opt.Repeat - round(opt.Repeat)) > 0
@@ -83,6 +88,9 @@ function sim = sim_profile_sequence_LGM50(model_name, init_soc, profile_sequence
     seg0.sim = apply_voltage_window(seg0.sim, opt.VMin, opt.VMax);
     update_waitbar_safe(h_wait, 1, n_segments_total, segments(1));
     sim = seg0.sim;
+    if opt.MemoryLight
+        sim = prune_heavy_history_fields(sim);
+    end
     sim.profile = 'SEQUENCE';
     sim.profile_definition = segments;
     sim.profile_sequence_input = profile_sequence;
@@ -124,7 +132,7 @@ function sim = sim_profile_sequence_LGM50(model_name, init_soc, profile_sequence
         sim.segment_cycle = [sim.segment_cycle; segments(s).cycle*ones(numel(idx),1)];
         sim.capacity_cycle = [sim.capacity_cycle; capacity_cycle_by_segment(s)*ones(numel(idx),1)];
 
-        sim = append_optional_fields(sim, seg, idx);
+        sim = append_optional_fields(sim, seg, idx, opt.MemoryLight);
         [charged_ah_seg, discharged_ah_seg] = compute_charge_discharge_ah(seg.time, seg.current);
         sim.segment_log(end+1) = struct('segment', s, ...
             'cycle', segments(s).cycle, ...
@@ -338,19 +346,24 @@ function init_state = terminal_state_from_sim(sim, model_name)
     end
 end
 
-function sim = append_optional_fields(sim, seg, idx)
-    fields_2d = {'x', 'y', 'z', 'c_s_n', 'c_s_p', 'c_e', 'temperature'};
-    for k = 1:numel(fields_2d)
-        fn = fields_2d{k};
-        if isfield(sim, fn) && isfield(seg, fn)
-            sim.(fn) = [sim.(fn), seg.(fn)(:, idx)];
-        end
+function sim = append_optional_fields(sim, seg, idx, memory_light)
+    if nargin < 4
+        memory_light = false;
     end
-    fields_3d = {'c_s_n_pade', 'c_s_p_pade'};
-    for k = 1:numel(fields_3d)
-        fn = fields_3d{k};
-        if isfield(sim, fn) && isfield(seg, fn)
-            sim.(fn) = cat(3, sim.(fn), seg.(fn)(:, :, idx));
+    fields_2d = {'x', 'y', 'z', 'c_s_n', 'c_s_p', 'c_e', 'temperature'};
+    if ~memory_light
+        for k = 1:numel(fields_2d)
+            fn = fields_2d{k};
+            if isfield(sim, fn) && isfield(seg, fn)
+                sim.(fn) = [sim.(fn), seg.(fn)(:, idx)];
+            end
+        end
+        fields_3d = {'c_s_n_pade', 'c_s_p_pade'};
+        for k = 1:numel(fields_3d)
+            fn = fields_3d{k};
+            if isfield(sim, fn) && isfield(seg, fn)
+                sim.(fn) = cat(3, sim.(fn), seg.(fn)(:, :, idx));
+            end
         end
     end
     if isfield(sim, 'spme_outputs') && isfield(seg, 'spme_outputs')
@@ -360,6 +373,17 @@ function sim = append_optional_fields(sim, seg, idx)
             if isfield(seg.spme_outputs, fn)
                 sim.spme_outputs.(fn) = [sim.spme_outputs.(fn); seg.spme_outputs.(fn)(idx)];
             end
+        end
+    end
+end
+
+function sim = prune_heavy_history_fields(sim)
+    heavy_fields = {'x', 'y', 'z', 'c_s_n', 'c_s_p', 'c_e', 'temperature', ...
+                    'c_s_n_pade', 'c_s_p_pade', 'delta_sei', 'c_ec_sei'};
+    for k = 1:numel(heavy_fields)
+        fn = heavy_fields{k};
+        if isfield(sim, fn)
+            sim = rmfield(sim, fn);
         end
     end
 end

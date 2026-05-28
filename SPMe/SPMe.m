@@ -45,6 +45,8 @@ classdef SPMe
         c_ex
         delta_sei
         delta_sei_dot
+        c_ec_sei % added for Safari's SEI model
+        c_ec_sei_dot % added for Safari's SEI model
         eta_p
         eta_pl
         jn
@@ -83,14 +85,14 @@ classdef SPMe
             % Parameters
             obj.p = p;
             % Degradation model selection at runtime:
-            %   p.degradation_model in {'none','ramadass','yang'}
+            %   p.degradation_model in {'none','ramadass','yang','safari'}
             if isfield(obj.p, 'degradation_model') && ~isempty(obj.p.degradation_model)
                 obj.degradation_model = lower(char(obj.p.degradation_model));
             else
                 obj.degradation_model = 'none';
             end
-            if ~ismember(obj.degradation_model, {'none', 'ramadass', 'yang'})
-                error('p.degradation_model must be one of: none, ramadass, yang.');
+            if ~ismember(obj.degradation_model, {'none', 'ramadass', 'yang', 'safari'})
+                error('p.degradation_model must be one of: none, ramadass, yang, safari.');
             end
             if isfield(obj.p, 'electrolyte_model') && ~isempty(obj.p.electrolyte_model)
                 obj.electrolyte_model = lower(char(obj.p.electrolyte_model));
@@ -101,6 +103,24 @@ classdef SPMe
                 error('p.electrolyte_model must be one of: fdm, fvm.');
             end
             use_degradation_state = ~strcmp(obj.degradation_model, 'none');
+            use_safari_state = strcmp(obj.degradation_model, 'safari'); % added for Safari's SEI model
+            if use_safari_state % added for Safari's SEI model
+                % Number of interior nodes used to discretize EC diffusion through the SEI film.
+                % State order for safari mode is [c_s_n; c_s_p; c_e; delta_sei; c_ec_sei].
+                if ~isfield(obj.p, 'Nsei') || isempty(obj.p.Nsei)
+                    obj.p.Nsei = 10;
+                end
+                if ~isfield(obj.p, 'epsilon_sei') || isempty(obj.p.epsilon_sei)
+                    % Safari uses K_EC*c_EC,sln at the SEI/electrolyte boundary and notes
+                    % K_EC can be interpreted as SEI porosity. Default 1 keeps Yang-style c0_ec.
+                    obj.p.epsilon_sei = 0.05; % 1.0;
+                end
+                if ~isfield(obj.p, 'delta_sei_min') || isempty(obj.p.delta_sei_min)
+                    obj.p.delta_sei_min = 1e-12;
+                end
+            else
+                obj.p.Nsei = 0;
+            end
 
             % System Internal States
             obj.c_s_n = MX.sym('c_s_n', obj.p.Nr-1);
@@ -113,6 +133,10 @@ classdef SPMe
             obj.c_e_dot = MX.sym('c_e_dot', length(obj.c_e));
             if use_degradation_state
                 obj.delta_sei = MX.sym('delta_sei', 1);
+            end
+            if use_safari_state % added for Safari's SEI model
+                obj.c_ec_sei = MX.sym('c_ec_sei', obj.p.Nsei);
+                obj.c_ec_sei_dot = MX.sym('c_ec_sei_dot', obj.p.Nsei);
             end
             % System Input
             obj.cur = MX.sym('cur', 1);
@@ -127,7 +151,9 @@ classdef SPMe
             obj.eta_pl = MX.sym('eta_pl');
 
             % State Vectors
-            if use_degradation_state
+            if use_safari_state % added for Safari's SEI model
+                obj.x = vertcat(obj.c_s_n, obj.c_s_p, obj.c_e, obj.delta_sei, obj.c_ec_sei);
+            elseif use_degradation_state
                 obj.x = vertcat(obj.c_s_n, obj.c_s_p, obj.c_e, obj.delta_sei);
             else
                 obj.x = vertcat(obj.c_s_n, obj.c_s_p, obj.c_e);
@@ -185,7 +211,7 @@ classdef SPMe
                 delta_sei = 0;
             end
 
-            R_tot_n = p.R_f_n + delta_sei/p.kappa_P;
+            R_tot_n = p.R_f_n + delta_sei/p.kappa_sei;
             R_tot_p = p.R_f_p;
 
             % Voltage
@@ -204,10 +230,20 @@ classdef SPMe
             kap_s_eff = kap_s * p.epsilon_e_s.^(p.brug);
             kap_p_eff = kap_p * p.epsilon_e_p.^(p.brug);
 
-            % Activity coefficient
-            dfca_n = electrolyteAct(cen_bar, p.T_amb, p);
-            dfca_s = electrolyteAct(ces_bar, p.T_amb, p);
-            dfca_p = electrolyteAct(cep_bar, p.T_amb, p);
+            % Activity-coefficient correction toggle for electrolyte polarization.
+            use_electrolyte_activity = true;
+            if isfield(p, 'use_electrolyte_activity') && ~isempty(p.use_electrolyte_activity)
+                use_electrolyte_activity = logical(p.use_electrolyte_activity);
+            end
+            if use_electrolyte_activity
+                dfca_n = electrolyteAct(cen_bar, p.T_amb, p);
+                dfca_s = electrolyteAct(ces_bar, p.T_amb, p);
+                dfca_p = electrolyteAct(cep_bar, p.T_amb, p);
+            else
+                dfca_n = 0;
+                dfca_s = 0;
+                dfca_p = 0;
+            end
 
             % Overpotential due to electrolyte conductivity
             V_electrolyteCond = (p.L_n/(2*kap_n_eff) + 2*p.L_s/(2*kap_s_eff) + p.L_p/(2*kap_p_eff))*obj.cur; ...
@@ -232,6 +268,9 @@ classdef SPMe
             eta_n_side = 0;
             phi_se = 0;
             eta_s = 0;
+            c_s_ec = obj.p.c0_ec; % 0; % added for Safari's SEI model
+            safari_pe = 0; % added for Safari's SEI model
+            safari_k = 0; % added for Safari's SEI model
             switch obj.degradation_model
                 case 'none'
                     obj.delta_sei_dot = 0;
@@ -251,7 +290,7 @@ classdef SPMe
                     phi_se = eta_n_side + Unref_side + obj.p.Faraday*R_tot_n*jn_tot;
                     eta_s = phi_se - obj.p.Us - obj.p.Faraday*R_tot_n*jn_tot;
                     j_sei = -obj.p.i0s/obj.p.Faraday * exp((-obj.p.alph*obj.p.Faraday)/(obj.p.R*obj.p.T_amb)*eta_s);
-                    obj.delta_sei_dot = -obj.p.M_P/(obj.p.rho_P) * j_sei;
+                    obj.delta_sei_dot = -obj.p.M_P/(2 * obj.p.rho_P) * j_sei;
                     j_side_total = j_sei;
 
                     % Intercalation flux reduced by side reaction (Ramadass-style).
@@ -271,7 +310,7 @@ classdef SPMe
                     j_sei_numel = -K * obj.p.c0_ec;
                     j_sei_denomi = 1 + K * delta_film / obj.p.D_ec;
                     j_sei = j_sei_numel/j_sei_denomi;
-                    obj.delta_sei_dot = -obj.p.M_sei/(obj.p.rho_sei) * j_sei;
+                    obj.delta_sei_dot = -obj.p.M_sei/(2 * obj.p.rho_sei) * j_sei;
 
                     c_s_ec = j_sei * delta_film / obj.p.D_ec + obj.p.c0_ec;
                     obj.p.i0s = obj.p.k0_sei * c_s_ec * obj.p.Faraday;
@@ -283,6 +322,59 @@ classdef SPMe
                     j_plating = 0;
 
                     j_side_total = j_sei + j_plating;
+                    obj.jn = (abs(jn_tot) - abs(j_side_total)) .* sign(jn_tot);
+                    obj.jp = jp_tot;
+
+                case 'safari'
+                    % Safari et al. (JES 2009) SEI model with dynamic EC diffusion
+                    % through the SEI film. Here j_sei is the EC-consumption molar
+                    % surface flux [mol/(m^2 s)], so delta_dot includes 1/2 stoichiometry.
+                    eta_n_side = RTaF * asinh(obj.cur / (2*obj.p.a_s_n*obj.p.Area_n*obj.p.L_n*i_0n(1)));
+                    Unref_side = refPotentialAnode(obj.p, obj.c_ss_n/obj.p.c_s_n_max);
+                    R_film = obj.delta_sei/obj.p.kappa_sei;
+
+                    % Safari Eq. 5 driving potential: phi_1 - R_SEI*i_t.
+                    % In this SPMe convention eta_n_side + Unref_side approximates phi_1,
+                    % and F*R_film*jn_tot is the interfacial-area ohmic film drop.
+                    phi_se = eta_n_side + Unref_side + obj.p.Faraday*R_film*jn_tot;
+                    eta_s = phi_se - obj.p.U_sei - obj.p.Faraday*R_film*jn_tot;  % added U_sei term (which was omitted in Safari2009) to match with Yang                     
+                    K = obj.p.k0_sei * exp((-obj.p.alph*obj.p.Faraday)/(obj.p.R*obj.p.T_amb)*eta_s);
+                    safari_k = K;
+
+                    % Moving-boundary growth factor: delta_dot = gamma*K*c_s_ec.
+                    gamma_sei = obj.p.M_sei/(2*obj.p.rho_sei);
+                    nsei = obj.p.Nsei;
+                    delta_eff = obj.delta_sei + obj.p.delta_sei_min;
+                    dz = delta_eff/(nsei + 1);
+                    c_outer = obj.p.epsilon_sei * obj.p.c0_ec;
+                    c1 = obj.c_ec_sei(1);
+
+                    % Inner boundary couples diffusion/advection flux to reaction:
+                    % -D*(c1-cs)/dz + v*cs = -K*cs, with v=gamma*K*cs.
+                    % Stable positive root of: gamma*K*cs^2 + (D/dz+K)*cs - (D/dz)*c1 = 0.
+                    A_bc = obj.p.D_ec/dz;
+                    B_bc = A_bc + K;
+                    c_s_ec = (2*A_bc*c1)/(B_bc + sqrt(B_bc^2 + 4*gamma_sei*K*A_bc*c1));
+
+                    j_sei = -K * c_s_ec;
+                    obj.delta_sei_dot = -gamma_sei * j_sei;
+                    v_sei = obj.delta_sei_dot;
+                    safari_pe = v_sei*delta_eff/obj.p.D_ec;
+
+                    % EC transport inside SEI: dc/dt = D*d2c/dz2 - v*dc/dz.
+                    c_full = vertcat(c_s_ec, obj.c_ec_sei, c_outer);
+                    c_dot_vec = MX.zeros(nsei, 1);
+                    for kk = 1:nsei
+                        c_left = c_full(kk);
+                        c_mid = c_full(kk+1);
+                        c_right = c_full(kk+2);
+                        d2c = (c_right - 2*c_mid + c_left)/(dz^2);
+                        dcdr = (c_right - c_left)/(2*dz);
+                        c_dot_vec(kk) = obj.p.D_ec*d2c - v_sei*dcdr;
+                    end
+                    obj.c_ec_sei_dot = c_dot_vec;
+
+                    j_side_total = j_sei;
                     obj.jn = (abs(jn_tot) - abs(j_side_total)) .* sign(jn_tot);
                     obj.jp = jp_tot;
             end
@@ -361,7 +453,9 @@ classdef SPMe
             % obj.h_p = Function('h_p', {obj.x_p, obj.u}, {obj.y_p}, {'x', 'p'}, {'y'});
 
             % Integrator
-            if use_degradation_state
+            if use_safari_state % added for Safari's SEI model
+                obj.x_dot = vertcat(obj.c_s_n_dot, obj.c_s_p_dot, obj.c_e_dot, obj.delta_sei_dot, obj.c_ec_sei_dot);
+            elseif use_degradation_state
                 obj.x_dot = vertcat(obj.c_s_n_dot, obj.c_s_p_dot, obj.c_e_dot, obj.delta_sei_dot);
             else
                 obj.x_dot = vertcat(obj.c_s_n_dot, obj.c_s_p_dot, obj.c_e_dot);
@@ -389,6 +483,7 @@ classdef SPMe
                 'delta_sei', 'delta_sei_dot', 'jn', 'jp', ...
                 'j_sei', 'j_side', 'j_plating', 'i0s', ...
                 'eta_n_side', 'phi_se', 'eta_s', ...
+                'c_s_ec', 'safari_pe', 'safari_k', ... % added for Safari's SEI model
                 'V_electrolytePolar', ...
                 'dfca_n', 'dfca_s', 'dfca_p', ...
                 'cen_bar', 'ces_bar', 'cep_bar', ...
@@ -400,6 +495,7 @@ classdef SPMe
                          delta_sei, obj.delta_sei_dot, obj.jn, obj.jp, ...
                          j_sei, j_side_total, j_plating, obj.p.i0s, ...
                          eta_n_side, phi_se, eta_s, ...
+                         c_s_ec, safari_pe, safari_k, ... % added for Safari's SEI model
                          V_electrolytePolar, ...
                          dfca_n, dfca_s, dfca_p, ...
                          cen_bar, ces_bar, cep_bar, ...

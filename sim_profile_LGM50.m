@@ -23,9 +23,16 @@ function sim = sim_profile_LGM50(model_name, init_soc, profile_def, varargin)
 %     'Crate'      : C-rate for CC mode (default 1).
 %                    sign convention: + discharge, - charge
 %     'DegradationModel' : SPMe degradation model
-%                    {'none','ramadass','yang'} (default 'none')
+%                    {'none','ramadass','yang','safari'} (default 'none')
 %     'ElectrolyteModel' : SPMe electrolyte dynamics model
 %                    {'fdm','fvm'} (default 'fdm')
+%     'UseElectrolyteActivity' : include electrolyte activity correction
+%                    factor in SPMe electrolyte-polarization voltage term
+%                    (default true)
+%     'Nsei'       : # interior EC concentration nodes in SEI for Safari
+%                    model only (default 10)
+%     'EpsilonSEI' : SEI/electrolyte EC partition factor for Safari
+%                    model only (default 1.0)
 %     'InitialState' : state struct for continuation from prior segment.
 %                    For SPMe: struct('x', x_last)
 %                    For DFN : struct('x', x_last, 'z', z_last)
@@ -78,6 +85,9 @@ function sim = sim_profile_LGM50(model_name, init_soc, profile_def, varargin)
     addParameter(parser, 'Crate', 1);
     addParameter(parser, 'DegradationModel', 'none');
     addParameter(parser, 'ElectrolyteModel', 'fdm');
+    addParameter(parser, 'UseElectrolyteActivity', true);
+    addParameter(parser, 'Nsei', 10); % added for Safari's SEI model
+    addParameter(parser, 'EpsilonSEI', 0.05);  % added for Safari's SEI model 
     addParameter(parser, 'VEnd', []);
     addParameter(parser, 'InitialState', struct());
     addParameter(parser, 'SuppressSummary', false);
@@ -89,19 +99,36 @@ function sim = sim_profile_LGM50(model_name, init_soc, profile_def, varargin)
     addpath(fullfile(base_dir, 'param'));
     addpath(fullfile(base_dir, 'SPMe'));
     addpath(fullfile(base_dir, 'DFN'));
-    addpath(fullfile(base_dir, 'ECM'));
+    ecm_dir = fullfile(base_dir, 'ECM');
+    if isfolder(ecm_dir)
+        addpath(ecm_dir);
+    end
+    ecm2_dir = fullfile(base_dir, 'ECM 2');
+    if isfolder(ecm2_dir)
+        addpath(ecm2_dir);
+    end
 
     if ~isscalar(opt.Crate) || ~isfinite(opt.Crate)
         error('Crate must be a finite scalar.');
     end
     degradation_model = lower(char(opt.DegradationModel));
-    if ~ismember(degradation_model, {'none', 'ramadass', 'yang'})
-        error('DegradationModel must be one of: none, ramadass, yang.');
+    if ~ismember(degradation_model, {'none', 'ramadass', 'yang', 'safari'})
+        error('DegradationModel must be one of: none, ramadass, yang, safari.');
     end
     electrolyte_model = lower(char(opt.ElectrolyteModel));
     if ~ismember(electrolyte_model, {'fdm', 'fvm'})
         error('ElectrolyteModel must be one of: fdm, fvm.');
     end
+    if ~isscalar(opt.Nsei) || ~isfinite(opt.Nsei) || opt.Nsei < 1 || abs(opt.Nsei - round(opt.Nsei)) > 0  % added for Safari's SEI model
+        error('Nsei must be a positive integer.');
+    end
+    if ~isscalar(opt.EpsilonSEI) || ~isfinite(opt.EpsilonSEI) || opt.EpsilonSEI < 0   % added for Safari's SEI model
+        error('EpsilonSEI must be a nonnegative finite scalar.');
+    end
+    if ~(isscalar(opt.UseElectrolyteActivity) || islogical(opt.UseElectrolyteActivity))
+        error('UseElectrolyteActivity must be a scalar logical/numeric value.');
+    end
+    use_electrolyte_activity = logical(opt.UseElectrolyteActivity);
     use_v_end = ~isempty(opt.VEnd);
     if use_v_end && (~isscalar(opt.VEnd) || ~isfinite(opt.VEnd))
         error('VEnd must be a finite scalar when provided.');
@@ -184,7 +211,11 @@ function sim = sim_profile_LGM50(model_name, init_soc, profile_def, varargin)
 
     switch model_name
         case 'SPME'
-            p = load_SPMe_params(init_soc, t_amb, Nr, delta_t, Nxn, Nxs, Nxp, disable_thermal, degradation_model, electrolyte_model);
+            p = load_SPMe_params(init_soc, t_amb, Nr, delta_t, Nxn, Nxs, Nxp, disable_thermal, degradation_model, electrolyte_model, use_electrolyte_activity);
+            if strcmpi(degradation_model, 'safari') % added for Safari's SEI model
+                p.Nsei = round(opt.Nsei);
+                p.epsilon_sei = opt.EpsilonSEI;
+            end            
             if is_cc_profile
                 I = (p.OneC * opt.Crate) * ones(NT, 1);
             end
@@ -200,17 +231,26 @@ function sim = sim_profile_LGM50(model_name, init_soc, profile_def, varargin)
             if ~strcmpi(char(p.degradation_model), 'none')
                 delta_sei0 = 0;
                 x0 = [x0; delta_sei0];
+                if strcmpi(char(p.degradation_model), 'safari') % addd for Safari's model
+                    c_ec_sei0 = p.epsilon_sei * p.c0_ec * ones(p.Nsei, 1);
+                    x0 = [x0; c_ec_sei0];
+                end
             end
             nx_expected = numel(x0);
             if isstruct(opt.InitialState) && isfield(opt.InitialState, 'x') && ~isempty(opt.InitialState.x)
                 x0 = opt.InitialState.x(:);
                 if numel(x0) ~= nx_expected
-                    error('InitialState.x size mismatch for SPMe continuation.');
+                    error('InitialState.x size mismatch for SPMe continuation. Expected %d states, got %d.', nx_expected, numel(x0));
                 end
             end
             p.x0 = x0;
 
-            spme_ss = SPMe(p, 'idas');
+            spme_solver = 'idas';
+            if strcmpi(char(p.degradation_model), 'safari')
+                % Safari's added SEI diffusion states are more robust with cvodes.
+                spme_solver = 'cvodes';
+            end
+            spme_ss = SPMe(p, spme_solver);
             req_spme_out = normalize_name_list(opt.SPMeOutputs);
             spme_out_vals = [];
             if ~isempty(req_spme_out)
@@ -287,7 +327,22 @@ function sim = sim_profile_LGM50(model_name, init_soc, profile_def, varargin)
             sim.soc = y(2, 1:t_last).';
             sim.c_s_n = x(1:p.Nr-1, 1:t_last);
             sim.c_s_p = x(p.Nr:2*(p.Nr-1), 1:t_last);
-            sim.c_e = x(2*p.Nr-1:2*p.Nr-1+p.Nx-4, 1:t_last);
+            idx_ce_start = 2*p.Nr - 1;
+            idx_ce_end = idx_ce_start + p.Nx - 4;
+            sim.c_e = x(idx_ce_start:idx_ce_end, 1:t_last);
+            if strcmpi(char(p.degradation_model), 'safari')
+                idx_delta = idx_ce_end + 1;
+                idx_c_ec_start = idx_delta + 1;
+                idx_c_ec_end = idx_c_ec_start + p.Nsei - 1;
+                sim.delta_sei = x(idx_delta, 1:t_last).';
+                sim.c_ec_sei = x(idx_c_ec_start:idx_c_ec_end, 1:t_last);
+                sim.safari = struct('Nsei', p.Nsei, 'epsilon_sei', p.epsilon_sei, ...
+                                    'state_indices', struct('delta_sei', idx_delta, ...
+                                                            'c_ec_sei', idx_c_ec_start:idx_c_ec_end));
+            elseif ~strcmpi(char(p.degradation_model), 'none')
+                idx_delta = idx_ce_end + 1;
+                sim.delta_sei = x(idx_delta, 1:t_last).';
+            end
             sim.x = x(:, 1:t_last);
             sim.y = y(:, 1:t_last);
             if ~isempty(req_spme_out)
@@ -577,6 +632,9 @@ function sim = sim_profile_LGM50(model_name, init_soc, profile_def, varargin)
             fprintf('ECM order (RC branches): %d\n', opt.ECMOrder);
         else
             fprintf('Discretization (Nxn,Nxs,Nxp,Nr): (%d,%d,%d,%d)\n', Nxn, Nxs, Nxp, Nr);
+            if strcmpi(degradation_model, 'safari')
+                fprintf('Safari SEI discretization: Nsei=%d, EpsilonSEI=%.6g\n', round(opt.Nsei), opt.EpsilonSEI);
+            end
         end
         if sim.terminated_early
             fprintf('%s\n', sim.termination_reason);
