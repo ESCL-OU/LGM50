@@ -180,7 +180,11 @@ function seg = post_compute_side_terms(sim, mode_name)
     j_sei = sim.spme_outputs.j_sei(:);
     dsei_dot = sim.spme_outputs.delta_sei_dot(:);
     dsei_dot_num = zeros(nT,1);
-    dsei = sim.x(end, :).';
+    if isfield(sim, 'delta_sei') && ~isempty(sim.delta_sei)
+        dsei = sim.delta_sei(:);
+    else
+        dsei = sim.x(end, :).';
+    end
     obj_p_i0s = zeros(nT,1);
     eta_n_side = sim.spme_outputs.eta_n_side(:);
     phi_se = sim.spme_outputs.phi_se(:);

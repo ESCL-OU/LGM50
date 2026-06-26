@@ -7,6 +7,15 @@ function [f_x_full, f_z_full, g_x_full, g_z_full, varargout] = jac_dfn(x,z,Cur,f
 %% Compute A/m^2
 I = Cur/p.Area_ref;
 
+if isfield(p, 'dfn_degradation_enabled') && p.dfn_degradation_enabled
+    [f_x_full, f_z_full, g_x_full, g_z_full] = dfn_finite_difference_jacobian(x, z, Cur, p);
+    if nargout > 4
+        varargout{1} = zeros(numel(x), 1);
+        varargout{2} = zeros(numel(z), 1);
+    end
+    return;
+end
+
 %% Parse out states
 Ncsn = p.PadeOrder * (p.Nxn-1);
 Ncsp = p.PadeOrder * (p.Nxp-1);
@@ -362,4 +371,41 @@ g_z_full = g_z;
 if(nargout > 4)
     varargout{1} = B1;
     varargout{2} = B2;
+end
+end
+
+function [f_x, f_z, g_x, g_z] = dfn_finite_difference_jacobian(x, z, Cur, p)
+    [f0, g0] = dae_dfn(x, z, Cur, p);
+    nx = numel(x);
+    nz = numel(z);
+    nf = numel(f0);
+    ng = numel(g0);
+
+    f_x = zeros(nf, nx);
+    g_x = zeros(ng, nx);
+    f_z = zeros(nf, nz);
+    g_z = zeros(ng, nz);
+
+    for ii = 1:nx
+        xp = x;
+        h = sqrt(eps) * max(1, abs(x(ii)));
+        xp(ii) = xp(ii) + h;
+        [fp, gp] = dae_dfn(xp, z, Cur, p);
+        f_x(:, ii) = (fp - f0) ./ h;
+        g_x(:, ii) = (gp - g0) ./ h;
+    end
+
+    for ii = 1:nz
+        zp = z;
+        h = sqrt(eps) * max(1, abs(z(ii)));
+        zp(ii) = zp(ii) + h;
+        [fp, gp] = dae_dfn(x, zp, Cur, p);
+        f_z(:, ii) = (fp - f0) ./ h;
+        g_z(:, ii) = (gp - g0) ./ h;
+    end
+
+    f_x = sparse(f_x);
+    f_z = sparse(f_z);
+    g_x = sparse(g_x);
+    g_z = sparse(g_z);
 end

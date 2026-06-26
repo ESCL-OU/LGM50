@@ -18,10 +18,11 @@
 %   Modified Feb 7, 2025 by Yuichi Kajiura (line specified as "YK modified")
 %   Modified Feb 24, 2025 by Wonoo Choo to be modelled using CasADi
 
-function p = load_SPMe_params(init_SOC, t_amb, Nr, delta_t, Nxn, Nxs, Nxp, disable_thermal, degradation_model, electrolyte_model, use_electrolyte_activity)
+function p = load_SPMe_params(init_SOC, t_amb, Nr, delta_t, Nxn, Nxs, Nxp, disable_thermal, degradation_model, electrolyte_model, use_electrolyte_activity, enable_lithium_plating, enable_anode_porosity_loss)
 %% Electrochemical Model Parameters
-% Load Lithium Cobolt Oxide Params, adopted from DUALFOIL
-run param/params_LGM50
+% Load this repository's LGM50 params regardless of the caller's cwd.
+repo_dir = fileparts(fileparts(mfilename('fullpath')));
+run(fullfile(repo_dir, 'param', 'params_LGM50.m'));
 
 if ~isscalar(init_SOC) || init_SOC < 0 || init_SOC > 1
     error('init_SOC must be a scalar in [0, 1].');
@@ -46,9 +47,17 @@ if ~ismember(p.electrolyte_model, {'fdm', 'fvm'})
     error('electrolyte_model must be one of: fdm, fvm.');
 end
 if nargin < 11 || isempty(use_electrolyte_activity)
-    use_electrolyte_activity = true;
+    use_electrolyte_activity = false;
 end
 p.use_electrolyte_activity = logical(use_electrolyte_activity);
+if nargin < 12 || isempty(enable_lithium_plating)
+    enable_lithium_plating = false;
+end
+p.enable_lithium_plating = ~strcmp(p.degradation_model, 'none') && logical(enable_lithium_plating);
+if nargin < 13 || isempty(enable_anode_porosity_loss)
+    enable_anode_porosity_loss = false;
+end
+p.enable_anode_porosity_loss = ~strcmp(p.degradation_model, 'none') && logical(enable_anode_porosity_loss);
 
 %% Input charge/discharge Current Data %%
 % % Current | Positive <=> Discharge, Negative <=> Charge
@@ -106,6 +115,8 @@ T20 = p.T_amb;
 
 % SEI layer
 delta_sei0 = 0;
+delta_li0 = 0;
+epsilon_e_n0 = p.epsilon_e_n;
 
 disp('Initial Conditions:');
 fprintf(1,'Voltage : %1.3f V\n',V0);
@@ -113,6 +124,12 @@ fprintf(1,'Normalized Solid Concentration in Anode | Cathode : %1.2f | %1.2f\n',
 fprintf(1,'Electrolyte Concentration : %2.3f kmol/m^3\n',ce0/1e3);
 fprintf(1,'Temperature in Roll | Can : %3.2f K | %3.2f K \n',T10,T20);
 fprintf(1,'SEI Layer in Anode : %2f um \n',delta_sei0*1e6);
+if p.enable_lithium_plating
+    fprintf(1,'Plated Li Layer in Anode : %2f um \n',delta_li0*1e6);
+end
+if p.enable_anode_porosity_loss
+    fprintf(1,'Initial Anode Porosity State : %2.4f \n',epsilon_e_n0);
+end
 disp(' ');
 
 %% Initial Condition
@@ -124,5 +141,11 @@ if ~p.disable_thermal
 end
 if ~strcmpi(char(p.degradation_model), 'none')
     x0 = [x0; delta_sei0];
+end
+if p.enable_lithium_plating
+    x0 = [x0; delta_li0];
+end
+if p.enable_anode_porosity_loss
+    x0 = [x0; epsilon_e_n0];
 end
 p.x0 = x0;

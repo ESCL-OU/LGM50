@@ -169,6 +169,16 @@ p.rho_sei = 1690;       % [kg/m^3] molor density of SEI
 p.M_li = 6.94e-3;       % [kg/mol] molor weight of lithium metal
 p.rho_li = 534;         % [kg/m^3] molor density of lithium metal
 
+%   Li plating side-reaction submodel
+%   Source/purpose: Yang et al. (2017), Eq. 12, lithium plating side reaction.
+p.i0_lpl = 1.0e-3;      % [A/m^2] exchange current density for Li plating
+p.alph_lpl = p.alph;    % [-] transfer coefficient for Li plating
+
+%   Optional Yang et al. (2017) aging add-ons. Disabled by default for all
+%   SEI models; enable explicitly to combine with Ramadass, Yang, or Safari SEI.
+p.enable_lithium_plating = false;      % Li plating submodel switch
+p.enable_anode_porosity_loss = false;  % Porosity-loss submodel switch
+
 
 %% Discretization parameters
 % Discrete time step

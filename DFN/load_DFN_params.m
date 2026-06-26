@@ -8,8 +8,9 @@ if ~isscalar(init_SOC) || init_SOC < 0 || init_SOC > 1
     error('init_SOC must be a scalar in [0, 1].');
 end
 
-% Optional discretization override:
-% load_DFN_params(..., Nr, Nxn, Nxs, Nxp)
+% Optional discretization/degradation override:
+% load_DFN_params(..., Nr, Nxn, Nxs, Nxp, degradation_model,
+%                 enable_lithium_plating, enable_anode_porosity_loss)
 Nr_opt = p.Nr;
 Nxn_opt = p.Nxn;
 Nxs_opt = p.Nxs;
@@ -19,6 +20,65 @@ if numel(varargin) >= 4
     if ~isempty(varargin{2}), Nxn_opt = varargin{2}; end
     if ~isempty(varargin{3}), Nxs_opt = varargin{3}; end
     if ~isempty(varargin{4}), Nxp_opt = varargin{4}; end
+end
+if numel(varargin) >= 5 && ~isempty(varargin{5})
+    p.degradation_model = lower(char(varargin{5}));
+else
+    p.degradation_model = 'none';
+end
+if ~ismember(p.degradation_model, {'none', 'safari'})
+    error('DFN degradation_model must be one of: none, safari.');
+end
+if numel(varargin) >= 6 && ~isempty(varargin{6})
+    p.enable_lithium_plating = logical(varargin{6});
+else
+    p.enable_lithium_plating = false;
+end
+if numel(varargin) >= 7 && ~isempty(varargin{7})
+    p.enable_anode_porosity_loss = logical(varargin{7});
+else
+    p.enable_anode_porosity_loss = false;
+end
+if numel(varargin) >= 8 && ~isempty(varargin{8})
+    p.dfn_lpl_coupling_mode = lower(char(varargin{8}));
+else
+    p.dfn_lpl_coupling_mode = 'spme_compatible';
+end
+if ~ismember(p.dfn_lpl_coupling_mode, {'spme_compatible', 'yang_total_flux'})
+    error('p.dfn_lpl_coupling_mode must be one of: spme_compatible, yang_total_flux.');
+end
+p.dfn_degradation_enabled = ~strcmpi(char(p.degradation_model), 'none');
+p.enable_lithium_plating = p.dfn_degradation_enabled && p.enable_lithium_plating;
+p.enable_anode_porosity_loss = p.dfn_degradation_enabled && p.enable_anode_porosity_loss;
+if ~isfield(p, 'kappa_SEI') || isempty(p.kappa_SEI)
+    p.kappa_SEI = p.kappa_sei;
+end
+if ~isfield(p, 'delta_sei_min') || isempty(p.delta_sei_min)
+    p.delta_sei_min = 1e-12;
+end
+if ~isfield(p, 'epsilon_sei') || isempty(p.epsilon_sei)
+    p.epsilon_sei = 0.05;
+end
+if ~isfield(p, 'epsilon_e_n_min') || isempty(p.epsilon_e_n_min)
+    p.epsilon_e_n_min = 0.03;
+end
+if ~isfield(p, 'c_e_min') || isempty(p.c_e_min)
+    p.c_e_min = 1;
+end
+if ~isfield(p, 'dfn_exp_arg_min') || isempty(p.dfn_exp_arg_min)
+    p.dfn_exp_arg_min = -50;
+end
+if ~isfield(p, 'dfn_exp_arg_max') || isempty(p.dfn_exp_arg_max)
+    p.dfn_exp_arg_max = 50;
+end
+if ~isfield(p, 'dfn_lpl_warn_flux') || isempty(p.dfn_lpl_warn_flux)
+    p.dfn_lpl_warn_flux = 1e-4;
+end
+if ~isfield(p, 'dfn_lpl_max_iter') || isempty(p.dfn_lpl_max_iter)
+    p.dfn_lpl_max_iter = 25;
+end
+if ~isfield(p, 'dfn_lpl_tol') || isempty(p.dfn_lpl_tol)
+    p.dfn_lpl_tol = 1e-12;
 end
 
 %%% INITIAL CONDITIONS
@@ -60,6 +120,11 @@ c_s_p = repmat(c_s_p0, [p.Nxp-1 1]);
 % Electrolyte concentration
 c_e = p.c_e * ones(p.Nx-3,1);
 
+% Spatial anode degradation states
+delta_sei_n = zeros(p.Nxn-1,1);
+delta_li_n = zeros(p.Nxn-1,1);
+epsilon_e_n_dyn = p.epsilon_e_n * ones(p.Nxn-1,1);
+
 % Temperature
 T = t_amb + 273.15;
 
@@ -82,7 +147,11 @@ jn = zeros(p.Nxn-1,1);
 jp = zeros(p.Nxp-1,1);
 
 % Initial Conditions
-p.x0 = [c_s_n; c_s_p; c_e; T];
+if p.dfn_degradation_enabled
+    p.x0 = [c_s_n; c_s_p; c_e; delta_sei_n; delta_li_n; epsilon_e_n_dyn; T];
+else
+    p.x0 = [c_s_n; c_s_p; c_e; T];
+end
 p.z0 = [phi_s_n; phi_s_p; i_en; i_ep; phi_e; jn; jp];
 
 %%% Finite difference for spherical particle

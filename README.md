@@ -17,8 +17,8 @@ This repository incorporates code from the SPMeT project, which is licensed unde
 
 - **SPMe implementation (based on `SPMeT` [4])**
   - **Thermal dynamics removed**: only the electrochemical SPMe model from the original SPMeT repository is used; its thermal dynamics are neglected here.
-  - **SEI layer growth neglected**: SEI growth dynamics present in the SPMeT model of [4] are ignored in this implementation.
-  - **CasADi-based class formulation**: the SPMe model has been refactored into a CasADi-based MATLAB class `SPMe/SPMe.m` that encapsulates parameter loading, state initialization, single-step integration, and voltage/output functions that were originally distributed across multiple scripts in [4].
+  - **CasADi-based class formulation**: the SPMe model has been refactored into a CasADi-based MATLAB class `SPMe/SPMe.m` that encapsulates state dynamics, single-step integration, voltage outputs, voltage-term decomposition, and optional diagnostic outputs.
+  - **Configurable degradation models**: SPMe can run without degradation or with SEI growth models based on Ramadass, Yang, or Safari. Lithium plating and anode porosity-loss add-ons can be enabled independently for SEI-enabled SPMe simulations.
 
 # Install Requirements
 
@@ -47,95 +47,208 @@ The output should display `cos(x)` to confirm that CasADi functions are working 
 
 # Running simulations
 
-Use this entry point for normal simulations:
+The main simulation entry points are:
 
-- `sim_profile_sequence_LGM50.m`
+- `sim_profile_LGM50.m`: run one profile segment.
+- `sim_profile_sequence_LGM50.m`: run concatenated profile segments continuously, with state handoff between segments.
 
-It supports both single and concatenated profiles for all three models:
+Both functions use SoC-based initialization:
 
-- **Models**: `DFN`, `SPMe`, `ECM`
-- **Profiles**:
-  - dynamic: `BJDST`, `DST`, `FUDS`, `US06`
-  - constant current: `CC` (direction determined by `Crate` sign)
-    - `Crate > 0`: discharge
-    - `Crate < 0`: charge
+1. `calculate_equilibrium_voltage_from_soc(init_soc)` computes an equilibrium voltage.
+2. `init_cs` computes initial electrode concentrations from that voltage.
+3. The selected model builds its state vector from those concentrations, unless an `InitialState` is provided for continuation.
 
-Initialization is SoC-based for all models:
+## Supported Models And Profiles
 
-1. `calculate_equilibrium_voltage_from_soc(init_soc)` computes equilibrium voltage.
-2. `init_cs` computes initial concentrations from that voltage.
-3. Model states are initialized from those concentrations (with model-specific state construction).
+Supported model names are:
 
-## Quick start
+- `SPMe`
+- `DFN`
+- `ECM`
+
+Supported profile definitions are:
+
+- Dynamic drive profiles: `BJDST`, `DST`, `FUDS`, `US06`
+- Constant-current profile: `{'CC', crate}`
+- Rest profile: `{'REST', duration_hours}`
+
+Current sign convention:
+
+- `crate > 0`: discharge
+- `crate < 0`: charge
+
+Concatenated sequences are passed as token lists:
 
 ```matlab
-% SPMe, single dynamic profile
-sim = sim_profile_sequence_LGM50('SPMe', 0.4, 'DST');
-
-% DFN, single CC 1C charge from SOC=0.4
-sim = sim_profile_sequence_LGM50('DFN', 0.4, {'CC', -1});
-
-% ECM, single dynamic profile with save
-sim = sim_profile_sequence_LGM50('ECM', 0.4, 'FUDS', 'SaveOutput', true);
-
-% SPMe, concatenated 1C charge then 1C discharge (one cycle)
-sim = sim_profile_sequence_LGM50('SPMe', 0.0, {'CC', -1, 'CC', 1});
-
-% SPMe, repeat the same charge/discharge sequence for 5 cycles
-sim = sim_profile_sequence_LGM50('SPMe', 0.0, {'CC', -1, 'CC', 1}, 'Repeat', 5);
-
-% SPMe, repeated FUDS -> 1C charge with custom voltage window
-sim = sim_profile_sequence_LGM50('SPMe', 0.4, {'FUDS', 'CC', -1}, ...
-    'Repeat', 3, 'VMin', 2.8, 'VMax', 4.2);
+{'REST', 0.25, 'CC', -1, 'CC', 1}
 ```
 
-## Options (`sim_profile_sequence_LGM50`)
+## Quick Start
 
 ```matlab
-sim = sim_profile_sequence_LGM50(model_name, init_soc, profile_sequence, ...
-    'Nxn', 70, 'Nxs', 35, 'Nxp', 70, 'Nr', 30, ...
+% One SPMe dynamic segment
+sim = sim_profile_LGM50('SPMe', 0.4, 'DST');
+
+% One DFN 1C charge segment
+sim = sim_profile_LGM50('DFN', 0.4, {'CC', -1});
+
+% One ECM dynamic segment, saved to disk
+sim = sim_profile_LGM50('ECM', 0.4, 'FUDS', 'SaveOutput', true);
+
+% Repeated SPMe charge/discharge sequence
+sim = sim_profile_sequence_LGM50('SPMe', 0.1, {'CC', -1, 'CC', 1}, ...
+    'Repeat', 5);
+
+% Sequence with rests and a voltage window
+sim = sim_profile_sequence_LGM50('SPMe', 0.1, ...
+    {'REST', 0.25, 'CC', -0.5, 'REST', 0.25, 'CC', 0.5}, ...
+    'Repeat', 3, ...
+    'VMin', 2.5, 'VMax', 4.2);
+```
+
+## SPMe Degradation Options
+
+SPMe degradation is configured with `DegradationModel`:
+
+- `none`: no degradation state.
+- `ramadass`: Ramadass-style SEI growth.
+- `yang`: Yang-style SEI growth.
+- `safari`: Safari-style SEI growth with EC diffusion states inside the SEI film.
+
+Lithium plating and anode porosity loss are independent add-ons. They are disabled by default for all SEI models and are ignored when `DegradationModel` is `none`.
+
+```matlab
+sim = sim_profile_sequence_LGM50('SPMe', 0.1, {'CC', -1, 'CC', 1}, ...
+    'Repeat', 10, ...
+    'DegradationModel', 'safari', ...
+    'EnableLithiumPlating', true, ...
+    'EnableAnodePorosityLoss', true, ...
+    'SPMeOutputs', {'delta_sei', 'delta_li', 'delta_film', ...
+                    'epsilon_e_n', 'j_sei', 'j_plating', 'j_side'});
+```
+
+Useful SPMe optional output names include:
+
+- Degradation states and rates: `delta_sei`, `delta_sei_dot`, `delta_li`, `delta_li_dot`, `delta_film`, `delta_film_dot`
+- Porosity and film resistance: `epsilon_e_n`, `epsilon_e_n_dot`, `R_film`
+- Side-reaction terms: `j_sei`, `j_plating`, `j_side`, `i0s`
+- Side-reaction potentials: `eta_n_side`, `phi_se`, `eta_s`
+- Electrolyte and averaged solid diagnostics: `cen_bar`, `ces_bar`, `cep_bar`, `cs_ave_n`, `cs_ave_p`
+
+## Single-Segment Options
+
+`sim_profile_LGM50` accepts one profile definition and returns one simulation segment.
+
+```matlab
+sim = sim_profile_LGM50(model_name, init_soc, profile_def, ...
+    'Nxn', 20, 'Nxs', 10, 'Nxp', 20, 'Nr', 20, ...
     'DeltaT', 1, 'Tamb', 25, ...
-    'ECMOrder', 2, ...
-    'Crate', -1, ...
-    'Repeat', 1, ...
-    'VMin', [], 'VMax', [], ...
-    'ShowProgress', true, ...
-    'VEnd', [], ...
+    'DegradationModel', 'none', ...
+    'ElectrolyteModel', 'fdm', ...
+    'UseElectrolyteActivity', false, ...
+    'EnableLithiumPlating', false, ...
+    'EnableAnodePorosityLoss', false, ...
+    'InitialState', struct(), ...
+    'SPMeOutputs', {}, ...
     'SaveOutput', false, 'OutputFile', '');
 ```
 
-- **`Nxn`, `Nxs`, `Nxp`, `Nr`**: discretization options (DFN/SPMe).
-- **`DeltaT`**: simulation timestep `[s]`.
-- **`Tamb`**: ambient temperature `[degC]`.
-- **`ECMOrder`**: number of RC branches for ECM.
-- **`Crate`**: used only if a token is `'CC'` without explicit rate (advanced compatibility).
-- **`Repeat`**: repeat entire `profile_sequence` this many times.
-- **`VMin` / `VMax`**: optional voltage window truncation for each segment.
-- **`ShowProgress`**: show a waitbar while running segments/repeats.
-- **`VEnd`** (optional custom stop voltage):
-  - dynamic and CC discharge stop when `V <= VEnd`
-  - CC charge stops when `V >= VEnd`
-  - dynamic profiles automatically repeat until `VEnd` is reached (subject to internal safety repeat cap).
-- **`SaveOutput` / `OutputFile`**: save simulation struct to `.mat`.
+Important options:
 
-`profile_sequence` formats:
+- `Nxn`, `Nxs`, `Nxp`, `Nr`: discretization settings for electrochemical models.
+- `DeltaT`: fixed simulation timestep `[s]`.
+- `Tamb`: ambient temperature `[degC]`.
+- `ECMOrder`: number of RC branches for ECM.
+- `DegradationModel`: SPMe degradation model.
+- `ElectrolyteModel`: SPMe electrolyte dynamics, `fdm` or `fvm`.
+- `UseElectrolyteActivity`: include electrolyte activity correction in SPMe electrolyte-polarization voltage. Default is `false`.
+- `InitialState`: continue from a previous terminal state, e.g. `struct('x', x_last)` for SPMe.
+- `SPMeOutputs`: optional SPMe diagnostics to store in `sim.spme_outputs`.
+- `VEnd`: custom voltage termination for a segment.
+- `SaveOutput` / `OutputFile`: save `sim` to a `.mat` file.
 
-- single dynamic profile: `'DST'`, `'FUDS'`, `'BJDST'`, `'US06'`
-- single CC profile: `{'CC', -1}` or `{'CC', 1}`
-- concatenated sequence: `{'FUDS', 'CC', -1}` or `{'CC', -1, 'CC', 1}`
+## Sequence Options
+
+`sim_profile_sequence_LGM50` runs segments continuously by passing the terminal state of each segment into the next segment.
+
+```matlab
+sim = sim_profile_sequence_LGM50(model_name, init_soc, profile_sequence, ...
+    'Repeat', 1, ...
+    'Nxn', 10, 'Nxs', 5, 'Nxp', 10, 'Nr', 15, ...
+    'DeltaT', 1, 'Tamb', 25, ...
+    'DegradationModel', 'none', ...
+    'ElectrolyteModel', 'fdm', ...
+    'EnableLithiumPlating', false, ...
+    'EnableAnodePorosityLoss', false, ...
+    'VMin', [], 'VMax', [], ...
+    'ShowProgress', true, ...
+    'MemoryLight', false, ...
+    'InitialState', struct(), ...
+    'CheckpointFile', '', ...
+    'SPMeOutputs', {}, ...
+    'SaveOutput', false, 'OutputFile', '');
+```
+
+Additional sequence-specific options:
+
+- `Repeat`: repeat the full `profile_sequence`.
+- `VMin` / `VMax`: truncate each segment if voltage leaves the requested window.
+- `ShowProgress`: show a waitbar.
+- `MemoryLight`: omit large history fields from the aggregate sequence output while keeping core signals and requested SPMe outputs.
+- `CheckpointFile`: save a warm-start checkpoint at the end of each completed repeat. The checkpoint contains the aggregate `sim`, the last segment, terminal state, terminal SOC/voltage, and sequence metadata.
+
+## Warm Starts And Checkpoints
+
+For manual continuation, pass a terminal state through `InitialState`:
+
+```matlab
+sim1 = sim_profile_LGM50('SPMe', 0.2, {'CC', -1}, ...
+    'DegradationModel', 'safari');
+
+state = struct('x', sim1.x(:, end));
+
+sim2 = sim_profile_LGM50('SPMe', sim1.soc(end), {'CC', 1}, ...
+    'DegradationModel', 'safari', ...
+    'InitialState', state);
+```
+
+For long sequence runs, use `CheckpointFile`:
+
+```matlab
+sim = sim_profile_sequence_LGM50('SPMe', 0.1, {'CC', -1, 'CC', 1}, ...
+    'Repeat', 100, ...
+    'DegradationModel', 'safari', ...
+    'EnableLithiumPlating', true, ...
+    'EnableAnodePorosityLoss', true, ...
+    'CheckpointFile', 'results/SPMe/long_run_checkpoint.mat');
+```
+
+The saved checkpoint can be loaded and used to construct an `InitialState` for later continuation.
 
 ## Outputs
 
-`sim_profile_sequence_LGM50` returns a struct `sim` containing:
+Simulation functions return a struct `sim`.
 
-- common fields: `time`, `current`, `voltage`, `soc`, `model`, `profile`
-- sequence fields: `profile_definition`, `segment_index`, `segment_cycle`, `segment_log`, `repeat_count`
-- initialization diagnostics: `init_soc_input`, `init_voltage_from_soc`, `init_csn0`, `init_csp0`
-- termination info: `terminated_early`, `termination_reason`, `t_last`
-- model-specific states:
-  - DFN: `x`, `z`, `y`, `c_s_n_pade`, `c_s_p_pade`, `c_e`, `temperature`
-  - SPMe: `x`, `y`, `c_s_n`, `c_s_p`, `c_e`
-  - ECM: `x`, plus ECM parameter snapshots
+Common fields:
+
+- `time`, `current`, `voltage`, `soc`
+- `model`, `profile`, `p`
+- `terminated_early`, `termination_reason`, `t_last`
+- `init_soc_input`, `init_voltage_from_soc`, `init_csn0`, `init_csp0`
+
+Sequence-only fields:
+
+- `profile_definition`, `profile_sequence_input`, `repeat_count`
+- `segment_index`, `segment_cycle`, `capacity_cycle`
+- `segment_log`, `capacity_cycle_log`
+
+Model-specific fields:
+
+- SPMe: `x`, `y`, `c_s_n`, `c_s_p`, `c_e`, and optional degradation fields such as `delta_sei`, `delta_li`, `epsilon_e_n`
+- DFN: `x`, `z`, `y`, `c_s_n_pade`, `c_s_p_pade`, `c_e`, `temperature`
+- ECM: `x`, `ocv_p`, `ecm_p`
+
+If `SPMeOutputs` is requested, additional named time series are stored under `sim.spme_outputs`.
 
 
 # LG M50 cell description

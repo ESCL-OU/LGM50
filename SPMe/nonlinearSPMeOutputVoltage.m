@@ -61,7 +61,7 @@ function [V, varargout] = nonlinearSPMeOutputVoltage(p,c_ss_n,c_ss_p, c_ex,I, va
     V_electrolyteCond = (p.L_n/(2*kap_n_eff) + 2*p.L_s/(2*kap_s_eff) + p.L_p/(2*kap_p_eff))*I; ...
             
     % Activity-coefficient correction toggle for electrolyte polarization.
-    use_electrolyte_activity = true;
+    use_electrolyte_activity = false;
     if isfield(p, 'use_electrolyte_activity') && ~isempty(p.use_electrolyte_activity)
         use_electrolyte_activity = logical(p.use_electrolyte_activity);
     end

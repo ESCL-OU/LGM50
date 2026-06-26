@@ -17,7 +17,7 @@ function out = test_spme_compare(model_a, model_b)
 
     t_amb = 25;
     delta_t = 1;
-    init_soc_charge = 0.0;
+    init_soc_charge = 0.05;
     sequence1 = {'REST', 0.5, 'CC', -0.2, 'REST', 0.5, 'CC', 0.2};
     sequence2 = {'CC', -1.0, 'CC', 1.0};
     sequence1_repeat = 1;

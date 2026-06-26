@@ -53,6 +53,9 @@ function [c_e_dot, aux] = ode_electrolyte_conservative(c_e, jn, jp, p)
     dx_n = p.L_n * p.delta_x_n;
     dx_s = p.L_s * p.delta_x_s;
     dx_p = p.L_p * p.delta_x_p;
+    %dx_n = p.L_n / (p.Nxn - 1);
+    %dx_s = p.L_s / (p.Nxs - 1);
+    %dx_p = p.L_p / (p.Nxp - 1);
 
     % ----------------------------
     % Effective diffusivities
