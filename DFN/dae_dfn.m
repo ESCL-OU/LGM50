@@ -187,7 +187,6 @@ if strcmp(lpl_coupling_mode, 'yang_total_flux')
 else
     LDP_n = phi_se_n - p.Faraday * R_film_n .* film_flux_lpl_n;
 end
-LDP_total_n = phi_se_n - p.Faraday * R_film_n .* j_tot_n;
 delta_film_dot_n = delta_sei_dot_n + delta_li_dot_n;
 if use_degradation && isfield(p, 'enable_anode_porosity_loss') && p.enable_anode_porosity_loss
     epsilon_e_n_dot_raw = -p.a_s_n .* delta_film_dot_n;
@@ -449,9 +448,9 @@ c_ep = c_e((p.Nxn-1)+p.Nxs : end);
 c_ex = [ce0n; c_en; cens; c_es; cesp; c_ep; ce0p];
 
 % Aggregate Outputs
-dfn_deg_y = [LDP_n; LDP_total_n; jn; j_sei_n; j_lpl_n; j_tot_n; ...
+dfn_deg_y = [LDP_n; jn; j_sei_n; j_lpl_n; j_tot_n; ...
              delta_sei_n; delta_li_n; epsilon_e_n; phi_e(1:Nn); phi_s_n; ...
-             LDP_n(end); LDP_total_n(end); j_lpl_n(end); delta_li_n(end); epsilon_e_n(end)];
+             LDP_n(end); j_lpl_n(end); delta_li_n(end); epsilon_e_n(end)];
 if use_degradation
     varargout{1} = [Volt; SOC; eta_pl; c_ss_n; c_ss_p; c_avg_n; c_avg_p; c_ex; eta_n; eta_p; Unref; dfn_deg_y];
 else
@@ -492,14 +491,13 @@ if nargout > 3
     varargout{11} = V_electrolyteCond;
     varargout{12} = V_electrolytePolar;
     varargout{13} = LDP_n;
-    varargout{14} = LDP_total_n;
-    varargout{15} = jn;
-    varargout{16} = j_sei_n;
-    varargout{17} = j_lpl_n;
-    varargout{18} = j_tot_n;
-    varargout{19} = delta_sei_n;
-    varargout{20} = delta_li_n;
-    varargout{21} = epsilon_e_n;
-    varargout{22} = phi_s_n;
+    varargout{14} = jn;
+    varargout{15} = j_sei_n;
+    varargout{16} = j_lpl_n;
+    varargout{17} = j_tot_n;
+    varargout{18} = delta_sei_n;
+    varargout{19} = delta_li_n;
+    varargout{20} = epsilon_e_n;
+    varargout{21} = phi_s_n;
 end
 

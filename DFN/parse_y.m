@@ -23,9 +23,8 @@ function [Volt, SOC, eta_pl, c_ss_n, c_ss_p, c_avg_n, c_avg_p, c_ex, eta_n, eta_
     if nargout > 11
         idx = 5*Nn + 3*Np + Nx + 7;
         deg = struct();
-        if size(y, 1) >= idx + 11*Nn + 4
+        if size(y, 1) >= idx + 10*Nn + 3
             deg.LDP_n = y(idx:idx+Nn-1, 1:t_last); idx = idx + Nn;
-            deg.LDP_total_n = y(idx:idx+Nn-1, 1:t_last); idx = idx + Nn;
             deg.j_int_n = y(idx:idx+Nn-1, 1:t_last); idx = idx + Nn;
             deg.j_sei_n = y(idx:idx+Nn-1, 1:t_last); idx = idx + Nn;
             deg.j_lpl_n = y(idx:idx+Nn-1, 1:t_last); idx = idx + Nn;
@@ -36,13 +35,11 @@ function [Volt, SOC, eta_pl, c_ss_n, c_ss_p, c_avg_n, c_avg_p, c_ex, eta_n, eta_
             deg.phi_e_n = y(idx:idx+Nn-1, 1:t_last); idx = idx + Nn;
             deg.phi_s_n = y(idx:idx+Nn-1, 1:t_last); idx = idx + Nn;
             deg.LDP_sep_n = y(idx, 1:t_last); idx = idx + 1;
-            deg.LDP_total_sep_n = y(idx, 1:t_last); idx = idx + 1;
             deg.j_lpl_sep_n = y(idx, 1:t_last); idx = idx + 1;
             deg.delta_li_sep_n = y(idx, 1:t_last); idx = idx + 1;
             deg.epsilon_e_sep_n = y(idx, 1:t_last);
         else
             deg.LDP_n = zeros(Nn, t_last);
-            deg.LDP_total_n = zeros(Nn, t_last);
             deg.j_int_n = zeros(Nn, t_last);
             deg.j_sei_n = zeros(Nn, t_last);
             deg.j_lpl_n = zeros(Nn, t_last);
@@ -53,7 +50,6 @@ function [Volt, SOC, eta_pl, c_ss_n, c_ss_p, c_avg_n, c_avg_p, c_ex, eta_n, eta_
             deg.phi_e_n = zeros(Nn, t_last);
             deg.phi_s_n = zeros(Nn, t_last);
             deg.LDP_sep_n = zeros(1, t_last);
-            deg.LDP_total_sep_n = zeros(1, t_last);
             deg.j_lpl_sep_n = zeros(1, t_last);
             deg.delta_li_sep_n = zeros(1, t_last);
             deg.epsilon_e_sep_n = p.epsilon_e_n * ones(1, t_last);
