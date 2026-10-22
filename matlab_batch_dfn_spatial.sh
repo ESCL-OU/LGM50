@@ -8,7 +8,7 @@
 #SBATCH --error=results/dfn_spatial_%j_stderr.txt
 #SBATCH --time=48:00:00
 #SBATCH --job-name=dfn_spatial
-#SBATCH --mail-user=yuichi@ou.edu
+#SBATCH --mail-user=your_email@example.edu
 #SBATCH --mail-type=END,FAIL
 #SBATCH --chdir=/home/yuichi/SPM-OP
 

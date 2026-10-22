@@ -45,6 +45,10 @@ disp(jacobian(sin(x),x))
 The output should display `cos(x)` to confirm that CasADi functions are working correctly.
 
 
+6. Point the project at your CasADi folder
+
+`startup.m` adds CasADi and `tests/` to the MATLAB path. Edit its hard-coded `casadi_dir` to your CasADi location, then run `startup` from the repository root at the start of each session.
+
 # Running simulations
 
 The main simulation entry points are:
@@ -70,6 +74,7 @@ Supported profile definitions are:
 
 - Dynamic drive profiles: `BJDST`, `DST`, `FUDS`, `US06`
 - Constant-current profile: `{'CC', crate}`
+- Fixed-duration constant-current segment (sequences only): `{'CC', crate, duration_hours}`
 - Rest profile: `{'REST', duration_hours}`
 
 Current sign convention:
@@ -194,6 +199,8 @@ Additional sequence-specific options:
 - `Repeat`: repeat the full `profile_sequence`.
 - `VMin` / `VMax`: truncate each segment if voltage leaves the requested window.
 - `ShowProgress`: show a waitbar.
+- `SuppressSummary`: suppress the per-segment progress printout.
+- `UseElectrolyteActivity`: forwarded to every segment (same meaning as in `sim_profile_LGM50`).
 - `MemoryLight`: omit large history fields from the aggregate sequence output while keeping core signals and requested SPMe outputs.
 - `CheckpointFile`: save a warm-start checkpoint at the end of each completed repeat. The checkpoint contains the aggregate `sim`, the last segment, terminal state, terminal SOC/voltage, and sequence metadata.
 
@@ -229,6 +236,8 @@ The saved checkpoint can be loaded and used to construct an `InitialState` for l
 
 Simulation functions return a struct `sim`.
 
+Row timing (SPMe, since 2026-07-04): row 1 is the initial state with `current = 0`; row k (k > 1) holds the state, voltage, SoC and optional outputs after integrating one `DeltaT` step with the current stored in that same row. Data produced before this fix stored the current one row ahead of the state it produced.
+
 Common fields:
 
 - `time`, `current`, `voltage`, `soc`
@@ -250,6 +259,63 @@ Model-specific fields:
 
 If `SPMeOutputs` is requested, additional named time series are stored under `sim.spme_outputs`.
 
+
+# PINN-SPMe dataset generation
+
+This repository generates the synthetic datasets used by [PINN-SPMe](https://github.com/yuichikajiura/PINN-SPMe), which estimates electrochemical states and SEI thickness from current/voltage data. The pipeline has three MATLAB steps.
+
+**1. Simulate a degraded cell (hours)**
+
+```matlab
+startup
+out = test_spme_degradation_addons_sequence_plot([], false, 'fvm');
+```
+
+Settings are at the top of `tests/test_spme_degradation_addons_sequence_plot.m`: Safari SEI, anode porosity loss on, Li plating off, start at SoC 0.1, Nr 15, Nxn/Nxs/Nxp 20/5/20. One repeat = one C/5 cycle + 99 1C cycles; 20 repeats. Each completed repeat writes `results/SPMe/spme_degradation_addons_checkpoint_safari_<timestamp>_repeat####_segment#####.mat` plus a `_manifest.mat`. Pass a checkpoint path as the first argument to resume. Plot SEI, porosity, capacity and Li inventory with `tests/plot_spme_degradation_addons_from_data.m`.
+
+The reference degraded cell used for the PINN-SPMe datasets is **repeat 15 of run `20260702_034413`** (about 1,500 cycles, `delta_sei` = 5.05188e-7 m, `epsilon_e_n` = 0.0560).
+
+**2. Generate the datasets**
+
+```matlab
+% fresh cell -> results/PINN_SPMe_dataset/
+generate_pinn_spme_training_data_LGM50_v5
+
+% degraded cell -> results/PINN_SPMe_dataset/degraded_from_<checkpoint name>/
+generate_pinn_spme_training_data_LGM50_v5('results/SPMe/spme_degradation_addons_checkpoint_safari_20260702_034413_repeat0015_segment03030.mat')
+```
+
+The generator runs SPMe (FVM electrolyte, Nr 15, Nxn/Nxs/Nxp 10/5/10, 1 s steps) for BJDST, FUDS, US06 and DST drive cycles plus a 1C discharge, all from SoC 0.9 to 2.5 V, and five HPPC sequences (120 s rest, 10 s 2C discharge pulse (1C at SoC 0.3), 120 s rest, 10 s 1C charge pulse, 120 s rest) at SoC 0.9/0.75/0.6/0.45/0.3. Each job writes `<name>.mat` (full `sim`, `data`, options) and `<name>.csv` (time, current, voltage, SoC, surface/average concentrations and the full state in PINN order `[c_s_n, c_e, c_s_p]`), plus `dataset_summary.csv`.
+
+In degraded mode only the degradation states are copied from the checkpoint (SEI thickness, plated Li, anode porosity, Safari EC profile); each job still starts at its own SoC. The Li lost to SEI and plating is removed from the anode baseline (`p.csn0`, `p.n_Li_s`) before `init_cs`, so the degraded cell's cyclable Li is reduced.
+
+Quick look at generated profiles: `plot_pinn_spme_generated_profiles('results/PINN_SPMe_dataset', true)`.
+
+**3. Copy into PINN-SPMe**
+
+Copy the CSVs into `PINN-SPMe/data/` with this rename: fresh `X.csv` -> `spme_X.csv`; degraded `X.csv` -> `spme_X_soh90.csv`; `id_HPPC_*.csv` -> `id_HPPC_*_soh90.csv` ("soh90" is a label only).
+
+## Repository map
+
+| File / folder | Role | Status |
+|---|---|---|
+| `sim_profile_LGM50.m`, `sim_profile_sequence_LGM50.m` | Simulation entry points | Current |
+| `SPMe/SPMe.m`, `SPMe/load_SPMe_params.m`, `param/` | CasADi SPMe class with SEI models; LG M50 parameters, `init_cs` | Current |
+| `generate_pinn_spme_training_data_LGM50_v5.m` | PINN-SPMe dataset generator | Current |
+| `tests/test_spme_degradation_addons_sequence_plot.m`, `tests/plot_spme_degradation_addons_from_data.m` | Degraded-cell cycling run and its plots | Current |
+| `plot_pinn_spme_generated_profiles.m`, `calculate_equilibrium_voltage_from_soc.m`, `startup.m` | Helpers | Current |
+| `DFN/`, `sim_DFN_*.m`, `tests/*dfn*`, `run_test_dfn_spatial_batch.m`, `matlab_batch_dfn_spatial.sh` | DFN model and spatial-degradation studies | Separate line of work; not used by PINN-SPMe |
+| other `tests/*` | Model validation (PyBaMM comparisons, mass balance, SEI model comparisons) | Diagnostic |
+| `generate_pinn_spme_training_data_LGM50.m`, `_v2`, `_v3`, `_v4` | Earlier generators (no HPPC; path and sequence-profile bugs) | Legacy; keep for history only |
+| `SPMe/SPMe_legacy.m`, `sim_SPMe_CC.m`, `sim_SPMe_CCCV.m`, `sim_DFN_CC.m`, `sim_DFN_CCCV.m`, `sim_ECM_CC.m`, `ECM 2/` | Older single-purpose scripts | Legacy |
+| `matlab_batch.sh`, `run_test_spme_batch.m` | SLURM wrapper for the old Ramadass-vs-Yang test | Legacy |
+
+`results/` is git-ignored. Under `results/SPMe/`, the full degradation runs are `20260625_204743` (FVM, Li plating on) and `20260702_034413` (FVM, plating off, used for PINN-SPMe); the other runs, `*_instability_diagnostics_*` and `*_warmstart_failure_trace_*` files are debugging outputs.
+
+
+## Drive-cycle data
+
+`data_CALCE/` holds drive-cycle tests (DST, FUDS, US06, BJDST) from the [CALCE Battery Research Group](https://calce.umd.edu/battery-data), University of Maryland, and versions prepared for the LG M50 (`*_LGM50.csv`) that the dynamic profiles in `sim_profile_LGM50` use. Credit CALCE if you use them.
 
 # LG M50 cell description
 
