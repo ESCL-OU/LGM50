@@ -26,7 +26,7 @@
 #SBATCH --error=results/spm_op_%j_stderr.txt
 #SBATCH --time=48:00:00
 #SBATCH --job-name=spm_op_multi
-#SBATCH --mail-user=yuichi@ou.edu
+#SBATCH --mail-user=your_email@example.edu
 #SBATCH --mail-type=END,FAIL
 #SBATCH --chdir=/home/yuichi/SPM-OP
 #

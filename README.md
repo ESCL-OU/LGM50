@@ -313,6 +313,10 @@ Copy the CSVs into `PINN-SPMe/data/` with this rename: fresh `X.csv` -> `spme_X.
 `results/` is git-ignored. Under `results/SPMe/`, the full degradation runs are `20260625_204743` (FVM, Li plating on) and `20260702_034413` (FVM, plating off, used for PINN-SPMe); the other runs, `*_instability_diagnostics_*` and `*_warmstart_failure_trace_*` files are debugging outputs.
 
 
+## Drive-cycle data
+
+`data_CALCE/` holds drive-cycle tests (DST, FUDS, US06, BJDST) from the [CALCE Battery Research Group](https://calce.umd.edu/battery-data), University of Maryland, and versions prepared for the LG M50 (`*_LGM50.csv`) that the dynamic profiles in `sim_profile_LGM50` use. Credit CALCE if you use them.
+
 # LG M50 cell description
 
 The models in this repository are parameterized for **LG’s M50** lithium‑ion cell, a high‑energy‑density **21700‑format** cylindrical cell (approx. 21 mm diameter, 70 mm length) with a nominal capacity of about **5 Ah** and nominal voltage around **3.6–3.7 V**.
