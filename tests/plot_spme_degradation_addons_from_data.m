@@ -51,6 +51,10 @@ function out = plot_spme_degradation_addons_from_data(data)
     [n_li_remaining_end, n_li_lost_sei_end, n_li_lost_plating_end, ...
         n_li_total_accounted_end, n_li_initial] = cycle_end_lithium_inventory( ...
         sim, cycle_id, delta_sei, delta_li);
+    n_li_solid_end = cycle_end_solid_lithium_inventory(sim, cycle_id);
+    init_cs_sample_interval = 500;
+    [init_cs_cycle_id, n_li_init_cs_sampled_end, init_cs_sample_table] = sampled_init_cs_lithium_inventory( ...
+        sim, cycle_id, init_cs_sample_interval);
 
     figure('Name', ['SPMe degradation visualization: ' source_label], 'Color', 'w');
     tl = tiledlayout(4, 2, 'Padding', 'compact', 'TileSpacing', 'compact');
@@ -162,12 +166,17 @@ function out = plot_spme_degradation_addons_from_data(data)
     plot(cycle_id, n_li_lost_sei_end, 's-r', 'LineWidth', 1.1, 'MarkerSize', 5);
     plot(cycle_id, n_li_lost_plating_end, '^-b', 'LineWidth', 1.1, 'MarkerSize', 5);
     plot(cycle_id, n_li_total_accounted_end, 'd-k', 'LineWidth', 1.1, 'MarkerSize', 5);
+    plot(cycle_id, n_li_solid_end, 'x-c', 'LineWidth', 1.1, 'MarkerSize', 6);
+    plot(init_cs_cycle_id, n_li_init_cs_sampled_end, 'p', ...
+        'Color', [0 0.45 0.74], 'MarkerFaceColor', [0 0.45 0.74], ...
+        'LineStyle', 'none', 'MarkerSize', 8);
     grid on;
     xlabel('Capacity cycle');
     ylabel('Lithium inventory [mol]');
     title('Cycle-end inventory');
     legend('Remaining cyclable Li', 'Lost to SEI', 'Lost to Li plating', ...
-        'Remaining + losses', 'Location', 'best');
+        'Remaining + losses', 'Solid Li from c_s path', ...
+        sprintf('degraded init\\_cs every %d cycles', init_cs_sample_interval), 'Location', 'best');
 
     nexttile;
     if isfinite(n_li_initial) && n_li_initial > 0
@@ -179,6 +188,11 @@ function out = plot_spme_degradation_addons_from_data(data)
             '^-b', 'LineWidth', 1.1, 'MarkerSize', 5);
         plot(cycle_id, 100 * n_li_total_accounted_end / n_li_initial, ...
             'd-k', 'LineWidth', 1.1, 'MarkerSize', 5);
+        plot(cycle_id, 100 * n_li_solid_end / n_li_initial, ...
+            'x-c', 'LineWidth', 1.1, 'MarkerSize', 6);
+        plot(init_cs_cycle_id, 100 * n_li_init_cs_sampled_end / n_li_initial, 'p', ...
+            'Color', [0 0.45 0.74], 'MarkerFaceColor', [0 0.45 0.74], ...
+            'LineStyle', 'none', 'MarkerSize', 8);
     else
         plot(cycle_id, nan(size(cycle_id)), 'o-k', 'LineWidth', 1.1, 'MarkerSize', 5);
     end
@@ -187,7 +201,8 @@ function out = plot_spme_degradation_addons_from_data(data)
     ylabel('Fraction of initial cyclable Li [%]');
     title(sprintf('Initial cyclable Li = %.6g mol', n_li_initial));
     legend('Remaining cyclable Li', 'Lost to SEI', 'Lost to Li plating', ...
-        'Remaining + losses', 'Location', 'best');
+        'Remaining + losses', 'Solid Li from c_s path', ...
+        sprintf('degraded init\\_cs every %d cycles', init_cs_sample_interval), 'Location', 'best');
 
     out = struct();
     out.source_label = source_label;
@@ -214,6 +229,11 @@ function out = plot_spme_degradation_addons_from_data(data)
     out.n_li_lost_sei_end = n_li_lost_sei_end;
     out.n_li_lost_plating_end = n_li_lost_plating_end;
     out.n_li_total_accounted_end = n_li_total_accounted_end;
+    out.n_li_solid_end = n_li_solid_end;
+    out.init_cs_sample_interval = init_cs_sample_interval;
+    out.init_cs_cycle_id = init_cs_cycle_id;
+    out.n_li_init_cs_sampled_end = n_li_init_cs_sampled_end;
+    out.init_cs_sample_table = init_cs_sample_table;
 end
 
 function [sim, source_label] = extract_sim(data)
@@ -373,6 +393,168 @@ function n_initial = initial_cyclable_lithium(sim)
             sim.init_csp0 * p.epsilon_s_p * p.Area_p * p.L_p;
     else
         n_initial = nan;
+    end
+end
+
+function n_solid_end = cycle_end_solid_lithium_inventory(sim, cycle_id)
+    n_solid_end = nan(numel(cycle_id), 1);
+    if ~isfield(sim, 'p') || ~isstruct(sim.p)
+        return;
+    end
+
+    p = sim.p;
+    [cs_ave_n, cs_ave_p] = solid_average_concentrations(sim);
+    if isempty(cs_ave_n) || isempty(cs_ave_p)
+        return;
+    end
+
+    n_solid = cs_ave_n(:) * p.epsilon_s_n * p.Area_n * p.L_n + ...
+        cs_ave_p(:) * p.epsilon_s_p * p.Area_p * p.L_p;
+    n_solid_end = values_at_cycle_end(sim, n_solid, cycle_id);
+end
+
+function [sample_cycle_id, n_sampled, sample_table] = sampled_init_cs_lithium_inventory(sim, cycle_id, interval)
+    sample_cycle_id = cycle_id(mod(cycle_id, interval) == 0);
+    n_sampled = nan(size(sample_cycle_id));
+    sample_table = struct('cycle', {}, 'time_s', {}, 'soc', {}, ...
+        'delta_sei', {}, 'delta_li', {}, 'epsilon_e_n_state', {}, ...
+        'n_lost_sei', {}, 'n_lost_plating', {}, ...
+        'csn0_original', {}, 'csp0_original', {}, 'n_Li_s_original', {}, ...
+        'csn0_degraded_param', {}, 'csp0_degraded_param', {}, 'n_Li_s_degraded_param', {}, ...
+        'veq_degraded', {}, 'csn0_initcs', {}, 'csp0_initcs', {}, ...
+        'n_li_initcs', {});
+    if isempty(sample_cycle_id) || ~isfield(sim, 'p') || ~isstruct(sim.p) || ~isfield(sim, 'soc')
+        return;
+    end
+
+    p = sim.p;
+    add_param_path_for_init_cs();
+    delta_sei = get_output(sim, 'delta_sei');
+    delta_li = get_output(sim, 'delta_li');
+    epsilon_e_n = get_output(sim, 'epsilon_e_n');
+    for k = 1:numel(sample_cycle_id)
+        idx_end = find(sim.capacity_cycle == sample_cycle_id(k), 1, 'last');
+        if isempty(idx_end) || idx_end > numel(sim.soc)
+            continue;
+        end
+        soc_k = min(max(sim.soc(idx_end), 0), 1);
+        try
+            dsei_k = value_or_zero(delta_sei, idx_end);
+            dli_k = value_or_zero(delta_li, idx_end);
+            een_k = value_or_default(epsilon_e_n, idx_end, p.epsilon_e_n);
+            [p_deg, n_lost_sei, n_lost_plating] = degraded_params_for_init_cs(p, dsei_k, dli_k);
+            [csn0, csp0, veq] = init_cs_from_soc_with_params(p_deg, soc_k);
+            n_sampled(k) = csn0 * p_deg.epsilon_s_n * p_deg.Area_n * p_deg.L_n + ...
+                csp0 * p_deg.epsilon_s_p * p_deg.Area_p * p_deg.L_p;
+            sample_table(k) = struct( ... %#ok<AGROW>
+                'cycle', sample_cycle_id(k), ...
+                'time_s', sim.time(idx_end), ...
+                'soc', soc_k, ...
+                'delta_sei', dsei_k, ...
+                'delta_li', dli_k, ...
+                'epsilon_e_n_state', een_k, ...
+                'n_lost_sei', n_lost_sei, ...
+                'n_lost_plating', n_lost_plating, ...
+                'csn0_original', p.csn0, ...
+                'csp0_original', p.csp0, ...
+                'n_Li_s_original', get_field_or_nan(p, 'n_Li_s'), ...
+                'csn0_degraded_param', p_deg.csn0, ...
+                'csp0_degraded_param', p_deg.csp0, ...
+                'n_Li_s_degraded_param', get_field_or_nan(p_deg, 'n_Li_s'), ...
+                'veq_degraded', veq, ...
+                'csn0_initcs', csn0, ...
+                'csp0_initcs', csp0, ...
+                'n_li_initcs', n_sampled(k));
+        catch
+            n_sampled(k) = nan;
+        end
+    end
+end
+
+function [p_deg, n_lost_sei, n_lost_plating] = degraded_params_for_init_cs(p, delta_sei, delta_li)
+    p_deg = p;
+    active_area_n = p.a_s_n * p.Area_n * p.L_n;
+    [M_sei, rho_sei] = sei_molar_mass_density(p);
+    n_lost_sei = 2 * rho_sei / M_sei * max(delta_sei, 0) * active_area_n;
+    n_lost_plating = p.rho_li / p.M_li * max(delta_li, 0) * active_area_n;
+    n_lost_total = n_lost_sei + n_lost_plating;
+
+    p_deg.csn0 = p.csn0 - n_lost_total / (p.epsilon_s_n * p.Area_n * p.L_n);
+    if isfield(p, 'n_Li_s') && isfinite(p.n_Li_s)
+        p_deg.n_Li_s = p.n_Li_s - n_lost_total;
+    end
+end
+
+function [csn0, csp0, veq] = init_cs_from_soc_with_params(p, soc)
+    [cn_low, cp_low] = init_cs(p, p.volt_min);
+    [cn_high, cp_high] = init_cs(p, p.volt_max);
+    cn_interp = cn_low + soc * (cn_high - cn_low);
+    cp_interp = cp_low + soc * (cp_high - cp_low);
+
+    theta_n = cn_interp / p.c_s_n_max;
+    theta_p = cp_interp / p.c_s_p_max;
+    veq = refPotentialCathode(p, theta_p) - refPotentialAnode(p, theta_n);
+    [csn0, csp0] = init_cs(p, veq);
+end
+
+function val = value_or_zero(x, idx)
+    val = value_or_default(x, idx, 0);
+end
+
+function val = value_or_default(x, idx, default_val)
+    if ~isempty(x) && idx <= numel(x) && isfinite(x(idx))
+        val = x(idx);
+    else
+        val = default_val;
+    end
+end
+
+function val = get_field_or_nan(s, name)
+    if isstruct(s) && isfield(s, name) && isscalar(s.(name))
+        val = s.(name);
+    else
+        val = nan;
+    end
+end
+
+function add_param_path_for_init_cs()
+    this_dir = fileparts(mfilename('fullpath'));
+    repo_dir = fileparts(this_dir);
+    param_dir = fullfile(repo_dir, 'param');
+    if isfolder(param_dir)
+        addpath(param_dir);
+    end
+end
+
+function [cs_ave_n, cs_ave_p] = solid_average_concentrations(sim)
+    cs_ave_n = get_optional_output_raw(sim, 'cs_ave_n');
+    cs_ave_p = get_optional_output_raw(sim, 'cs_ave_p');
+    if ~isempty(cs_ave_n) && ~isempty(cs_ave_p)
+        cs_ave_n = align_to_time(cs_ave_n, sim.time);
+        cs_ave_p = align_to_time(cs_ave_p, sim.time);
+        return;
+    end
+
+    if isfield(sim, 'c_s_n') && isfield(sim, 'c_s_p') && ...
+            size(sim.c_s_n, 2) == numel(sim.time) && size(sim.c_s_p, 2) == numel(sim.time)
+        cs_ave_n = mean(sim.c_s_n, 1).';
+        cs_ave_p = mean(sim.c_s_p, 1).';
+        cs_ave_n = align_to_time(cs_ave_n, sim.time);
+        cs_ave_p = align_to_time(cs_ave_p, sim.time);
+    elseif isfield(sim, 'init_csn0') && isfield(sim, 'init_csp0')
+        cs_ave_n = sim.init_csn0 * ones(numel(sim.time), 1);
+        cs_ave_p = sim.init_csp0 * ones(numel(sim.time), 1);
+    else
+        cs_ave_n = [];
+        cs_ave_p = [];
+    end
+end
+
+function y = get_optional_output_raw(sim, name)
+    if isfield(sim, 'spme_outputs') && isfield(sim.spme_outputs, name)
+        y = sim.spme_outputs.(name)(:);
+    else
+        y = [];
     end
 end
 

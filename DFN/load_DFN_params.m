@@ -81,6 +81,21 @@ if ~isfield(p, 'dfn_lpl_tol') || isempty(p.dfn_lpl_tol)
     p.dfn_lpl_tol = 1e-12;
 end
 
+% DFN degradation Jacobian mode.
+% 'finite_difference' is safest but very slow.
+% 'padded_analytic' uses Scott's original analytic DFN Jacobian and freezes
+% degradation derivatives in the Newton Jacobian. The full DAE residual still
+% contains SEI, plating, porosity, and electrolyte feedback.
+if numel(varargin) >= 9 && ~isempty(varargin{9})
+    p.dfn_jacobian_mode = lower(char(varargin{9}));
+else
+    p.dfn_jacobian_mode = 'padded_analytic';
+end
+
+if ~ismember(p.dfn_jacobian_mode, {'finite_difference', 'padded_analytic'})
+    error('p.dfn_jacobian_mode must be one of: finite_difference, padded_analytic.');
+end
+
 %%% INITIAL CONDITIONS
 Nr = Nr_opt;
 Nxn = Nxn_opt;

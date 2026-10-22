@@ -23,11 +23,14 @@ function out = plot_dfn_degradation_spatial_from_data(data, varargin)
     snapshots = checkpoint.snapshots;
     assert(~isempty(snapshots), 'No snapshots found.');
 
-    idx = select_snapshot_indices_local(numel(snapshots), opt.MaxCurves);
-    labels = cell(numel(idx), 1);
-    for ii = 1:numel(idx)
-        s = snapshots(idx(ii));
-        labels{ii} = sprintf('cyc %d, seg %d', s.capacity_cycle, s.segment_idx);
+    has_tags = isfield(snapshots, 'tag') && all(arrayfun(@(s) isfield(s, 'tag') && ~isempty(s.tag), snapshots));
+
+    if has_tags
+        idx_by_tag = group_snapshot_indices_by_tag_local(snapshots, opt.MaxCurves);
+    else
+        idx = select_snapshot_indices_local(numel(snapshots), opt.MaxCurves);
+        idx_by_tag = struct();
+        idx_by_tag.all = idx;
     end
 
     if isempty(opt.FigureDir)
@@ -44,66 +47,149 @@ function out = plot_dfn_degradation_spatial_from_data(data, varargin)
     end
 
     % Figure 1: spatial electrochemical/degradation profiles
-    fig1 = figure('Name', ['DFN spatial degradation checkpoints: ' source_label], 'Color', 'w');
-    tl = tiledlayout(3, 2, 'Padding', 'compact', 'TileSpacing', 'compact');
+    fields_to_plot = { ...
+        'c_e',       'c_e [mol/m^3]', false; ...
+        'LDP',       'Plating potential / LDP [V]', false; ...
+        'delta_sei', '\delta_{SEI} [nm]', true; ...
+        'epsilon_e', '\epsilon_e [-]', false; ...
+        'delta_li',  '\delta_{Li} [nm]', true; ...
+        'j_lpl',     'j_{lpl} [mol m^{-2} s^{-1}]', false};
+    
+    tag_order = { ...
+        'p0p2C_charge',    '0p2C_charge'; ...
+        'p0p2C_discharge', '0p2C_discharge'; ...
+        'p1C_charge',      '1C_charge'; ...
+        'p1C_discharge',   '1C_discharge'};
 
-    plot_panel_local(1, snapshots, idx, labels, 'c_e', 'c_e [mol/m^3]', false, opt.UseAbsoluteFlux);
-    plot_panel_local(2, snapshots, idx, labels, 'LDP', 'Plating potential / LDP [V]', false, opt.UseAbsoluteFlux);
-    plot_panel_local(3, snapshots, idx, labels, 'delta_sei', '	heta_{SEI} or \delta_{SEI} [nm]', true, opt.UseAbsoluteFlux);
-    plot_panel_local(4, snapshots, idx, labels, 'epsilon_e', '\epsilon_e [-]', false, opt.UseAbsoluteFlux);
-    plot_panel_local(5, snapshots, idx, labels, 'delta_li', '	heta_{Li} or \delta_{Li} [nm]', true, opt.UseAbsoluteFlux);
-    plot_panel_local(6, snapshots, idx, labels, 'j_lpl', 'j_{lpl} [mol m^{-2} s^{-1}]', false, opt.UseAbsoluteFlux);
-
-    title(tl, 'DFN spatial profiles at saved checkpoints', 'Interpreter', 'none');
-
+    for f = 1:size(fields_to_plot,1)
+        field_name = fields_to_plot{f,1};
+        y_label = fields_to_plot{f,2};
+        scale_nm = fields_to_plot{f,3};
+    
+        fig = figure('Name', ['DFN spatial ' field_name ': ' source_label], 'Color', 'w');
+        tl = tiledlayout(2, 2, 'Padding', 'compact', 'TileSpacing', 'compact');
+    
+        for t = 1:size(tag_order,1)
+            tag_key = tag_order{t,1};
+            tag = tag_order{t,2};
+            nexttile; hold on; box on; grid on;
+    
+            if isfield(idx_by_tag, tag_key)
+                idx_this = idx_by_tag.(tag_key);
+            else
+                idx_this = [];
+            end
+    
+            if isempty(idx_this)
+                title(strrep(tag, '_', '\_'));
+                xlabel('Normalized through-cell position, x/L_{cell}');
+                ylabel(y_label);
+                text(0.5, 0.5, 'No checkpoint', 'HorizontalAlignment', 'center');
+                continue;
+            end
+    
+            labels = make_snapshot_labels_local(snapshots, idx_this);
+    
+            for ii = 1:numel(idx_this)
+                s = snapshots(idx_this(ii));
+                y = s.(field_name);
+    
+                if scale_nm
+                    y = y * 1e9;
+                end
+                if strcmp(field_name, 'j_lpl') && opt.UseAbsoluteFlux
+                    y = abs(y);
+                end
+    
+                plot(s.x_norm, y, 'LineWidth', 1.1, 'DisplayName', labels{ii});
+            end
+    
+            add_region_boundaries_local(snapshots(idx_this(end)));
+            xlabel('Normalized through-cell position, x/L_{cell}');
+            ylabel(y_label);
+            title(strrep(tag, '_', '\_'), 'Interpreter', 'tex');
+    
+            if numel(idx_this) <= 12
+                legend('Location', 'best', 'Interpreter', 'none');
+            end
+        end
+    
+        title(tl, ['DFN spatial profiles: ' field_name], 'Interpreter', 'none');
+    
+        if opt.SaveFigures
+            safe_name = regexprep(field_name, '[^A-Za-z0-9_]', '_');
+            savefig(fig, fullfile(fig_dir, ['dfn_spatial_' safe_name '_by_tag.fig']));
+            saveas(fig, fullfile(fig_dir, ['dfn_spatial_' safe_name '_by_tag.png']));
+        end
+    end
     % Figure 2: separator-side summaries over checkpoints
     fig2 = figure('Name', ['DFN separator-side checkpoint summary: ' source_label], 'Color', 'w');
     tiledlayout(2, 2, 'Padding', 'compact', 'TileSpacing', 'compact');
-    cycle = arrayfun(@(s) s.capacity_cycle, snapshots).';
-    sep_LDP = arrayfun(@(s) s.separator_side.LDP, snapshots).';
-    sep_j = arrayfun(@(s) s.separator_side.j_lpl, snapshots).';
-    sep_dli = arrayfun(@(s) s.separator_side.delta_li, snapshots).';
-    sep_eps = arrayfun(@(s) s.separator_side.epsilon_e, snapshots).';
-
-    nexttile; plot(cycle, sep_LDP, 'o-', 'LineWidth', 1.1); grid on; xlabel('Capacity cycle'); ylabel('LDP_{sep} [V]');
-    nexttile; plot(cycle, sep_j, 'o-', 'LineWidth', 1.1); grid on; xlabel('Capacity cycle'); ylabel('j_{lpl,sep} [mol m^{-2} s^{-1}]');
-    nexttile; plot(cycle, sep_dli*1e9, 'o-', 'LineWidth', 1.1); grid on; xlabel('Capacity cycle'); ylabel('\delta_{Li,sep} [nm]');
-    nexttile; plot(cycle, sep_eps, 'o-', 'LineWidth', 1.1); grid on; xlabel('Capacity cycle'); ylabel('\epsilon_{e,sep} [-]');
-
+    
+    summary_fields = { ...
+        'LDP',       'LDP_{sep} [V]'; ...
+        'j_lpl',    'j_{lpl,sep} [mol m^{-2} s^{-1}]'; ...
+        'delta_li', '\delta_{Li,sep} [nm]'; ...
+        'epsilon_e','\epsilon_{e,sep} [-]'};
+    
+    for sf = 1:size(summary_fields,1)
+        metric = summary_fields{sf,1};
+        ylab = summary_fields{sf,2};
+    
+        nexttile; hold on; box on; grid on;
+    
+        for t = 1:numel(tag_order)
+            tag = tag_order{t};
+    
+            if ~isfield(idx_by_tag, tag_key)
+                continue;
+            end
+    
+            idx_this = idx_by_tag.(tag_key);
+            if isempty(idx_this)
+                continue;
+            end
+    
+            x_cycle = arrayfun(@(s) s.capacity_cycle, snapshots(idx_this)).';
+    
+            switch metric
+                case 'LDP'
+                    y = arrayfun(@(s) s.separator_side.LDP, snapshots(idx_this)).';
+                case 'j_lpl'
+                    y = arrayfun(@(s) s.separator_side.j_lpl, snapshots(idx_this)).';
+                    if opt.UseAbsoluteFlux
+                        y = abs(y);
+                    end
+                case 'delta_li'
+                    y = arrayfun(@(s) s.separator_side.delta_li, snapshots(idx_this)).' * 1e9;
+                case 'epsilon_e'
+                    y = arrayfun(@(s) s.separator_side.epsilon_e, snapshots(idx_this)).';
+            end
+    
+            plot(x_cycle, y, 'o-', 'LineWidth', 1.1, ...
+                'DisplayName', strrep(tag, '_', ' '));
+        end
+    
+        xlabel('Capacity cycle');
+        ylabel(ylab);
+        title(metric, 'Interpreter', 'none');
+        legend('Location', 'best', 'Interpreter', 'none');
+    end
+    
     if opt.SaveFigures
-        savefig(fig1, fullfile(fig_dir, 'dfn_spatial_profiles.fig'));
-        saveas(fig1, fullfile(fig_dir, 'dfn_spatial_profiles.png'));
-        savefig(fig2, fullfile(fig_dir, 'dfn_separator_summary.fig'));
-        saveas(fig2, fullfile(fig_dir, 'dfn_separator_summary.png'));
+        savefig(fig2, fullfile(fig_dir, 'dfn_separator_summary_by_tag.fig'));
+        saveas(fig2, fullfile(fig_dir, 'dfn_separator_summary_by_tag.png'));
     end
 
     out = struct();
     out.checkpoint = checkpoint;
     out.source_label = source_label;
-    out.selected_indices = idx;
+    if exist('idx', 'var')
+        out.selected_indices = idx;
+    else
+        out.selected_indices_by_tag = idx_by_tag;
+    end
     out.figure_dir = fig_dir;
-end
-
-function plot_panel_local(tile_idx, snapshots, idx, labels, field_name, y_label, scale_nm, use_abs_flux)
-    nexttile(tile_idx); hold on; box on; grid on;
-    for ii = 1:numel(idx)
-        s = snapshots(idx(ii));
-        y = s.(field_name);
-        if scale_nm
-            y = y * 1e9;
-        end
-        if strcmp(field_name, 'j_lpl') && use_abs_flux
-            y = abs(y);
-        end
-        plot(s.x_norm, y, 'LineWidth', 1.1, 'DisplayName', labels{ii});
-    end
-    add_region_boundaries_local(snapshots(idx(end)));
-    xlabel('Normalized through-cell position, x/L_{cell}');
-    ylabel(y_label);
-    title(field_name, 'Interpreter', 'none');
-    if tile_idx == 1
-        legend('Location', 'bestoutside', 'Interpreter', 'none');
-    end
 end
 
 function add_region_boundaries_local(s)
@@ -141,5 +227,46 @@ function [checkpoint, source_label] = load_checkpoint_local(data)
         source_label = 'workspace checkpoint wrapper';
     else
         error('Input must be a checkpoint struct or path to .mat file.');
+    end
+end
+
+function idx_by_tag = group_snapshot_indices_by_tag_local(snapshots, max_curves)
+    tag_map = { ...
+        'p0p2C_charge',    '0p2C_charge'; ...
+        'p0p2C_discharge', '0p2C_discharge'; ...
+        'p1C_charge',      '1C_charge'; ...
+        'p1C_discharge',   '1C_discharge'};
+
+    idx_by_tag = struct();
+
+    for t = 1:size(tag_map,1)
+        key = tag_map{t,1};
+        tag = tag_map{t,2};
+
+        idx = find(arrayfun(@(s) isfield(s, 'tag') && strcmp(s.tag, tag), snapshots));
+
+        if numel(idx) > max_curves
+            idx = idx(unique(round(linspace(1, numel(idx), max_curves))));
+        end
+
+        idx_by_tag.(key) = idx;
+    end
+end
+
+function labels = make_snapshot_labels_local(snapshots, idx)
+    labels = cell(numel(idx), 1);
+
+    for ii = 1:numel(idx)
+        s = snapshots(idx(ii));
+
+        if isfield(s, 'sequence2_cycle_idx')
+            labels{ii} = sprintf('cyc %d, seq2 %d, seg %d', ...
+                s.capacity_cycle, s.sequence2_cycle_idx, s.segment_idx);
+        elseif isfield(s, 'capacity_cycle')
+            labels{ii} = sprintf('cyc %d, seg %d', ...
+                s.capacity_cycle, s.segment_idx);
+        else
+            labels{ii} = sprintf('seg %d', s.segment_idx);
+        end
     end
 end

@@ -27,6 +27,9 @@ function sim = sim_profile_sequence_LGM50(model_name, init_soc, profile_sequence
 %     'DiagnosticsFile' : optional .mat path for sequence diagnostics
 %     'DiagnosticContext' : optional caller metadata copied into diagnostics
 %     'SPMeParamOverrides' : optional struct passed to sim_profile_LGM50
+%     'UseElectrolyteActivity' : include electrolyte activity correction
+%                     in SPMe electrolyte-polarization voltage
+%     'SuppressSummary' : true/false to suppress sequence progress prints
 
     if nargin < 1 || isempty(model_name)
         model_name = 'SPMe';
@@ -51,9 +54,11 @@ function sim = sim_profile_sequence_LGM50(model_name, init_soc, profile_sequence
     addParameter(parser, 'Crate', 1);
     addParameter(parser, 'DegradationModel', 'none');
     addParameter(parser, 'ElectrolyteModel', 'fdm');
+    addParameter(parser, 'UseElectrolyteActivity', false);
     addParameter(parser, 'EnableLithiumPlating', []);
     addParameter(parser, 'EnableAnodePorosityLoss', []);
     addParameter(parser, 'DFNLplCouplingMode', 'spme_compatible');
+    addParameter(parser, 'DFNJacobianMode', 'padded_analytic');
     addParameter(parser, 'VEnd', []);
     addParameter(parser, 'Repeat', 1);
     addParameter(parser, 'VMin', []);
@@ -68,6 +73,7 @@ function sim = sim_profile_sequence_LGM50(model_name, init_soc, profile_sequence
     addParameter(parser, 'DiagnosticContext', struct());
     addParameter(parser, 'SPMeParamOverrides', struct());
     addParameter(parser, 'SegmentCallback', []);
+    addParameter(parser, 'SuppressSummary', false);
     parse(parser, varargin{:});
     opt = parser.Results;
     if ~isscalar(opt.Repeat) || ~isfinite(opt.Repeat) || opt.Repeat < 1 || abs(opt.Repeat - round(opt.Repeat)) > 0
@@ -82,7 +88,12 @@ function sim = sim_profile_sequence_LGM50(model_name, init_soc, profile_sequence
     if ~isempty(opt.VMin) && ~isempty(opt.VMax) && opt.VMin >= opt.VMax
         error('VMin must be smaller than VMax.');
     end
+    if ~(isscalar(opt.UseElectrolyteActivity) || islogical(opt.UseElectrolyteActivity))
+        error('UseElectrolyteActivity must be a scalar logical/numeric value.');
+    end
+    opt.UseElectrolyteActivity = logical(opt.UseElectrolyteActivity);
     opt.EnableDiagnostics = logical(opt.EnableDiagnostics);
+    opt.SuppressSummary = logical(opt.SuppressSummary);
 
     segments = parse_profile_sequence(profile_sequence);
     segments = repeat_segments(segments, opt.Repeat);
@@ -192,17 +203,19 @@ function sim = sim_profile_sequence_LGM50(model_name, init_soc, profile_sequence
             save_sequence_checkpoint(opt.CheckpointFile, sim, seg0.sim, model_name, ...
                 s, n_segments_total, segments, opt);
         end
-        fprintf(['[%s] Repeat %d/%d | Segment %d/%d | %s | ', ...
-                 'Cycle %d | %.2f%% complete | SOC %.4f | V %.4f\n'], ...
-            datestr(now,'yyyy-mm-dd HH:MM:SS'), ...
-            segments(s).cycle, opt.Repeat, ...
-            s, n_segments_total, ...
-            segments(s).name, ...
-            capacity_cycle_by_segment(s), ...
-            100*s/max(n_segments_total,1), ...
-            seg.soc(end), ...
-            seg.voltage(end));
-        drawnow;
+        if ~opt.SuppressSummary
+            fprintf(['[%s] Repeat %d/%d | Segment %d/%d | %s | ', ...
+                     'Cycle %d | %.2f%% complete | SOC %.4f | V %.4f\n'], ...
+                datestr(now,'yyyy-mm-dd HH:MM:SS'), ...
+                segments(s).cycle, opt.Repeat, ...
+                s, n_segments_total, ...
+                segments(s).name, ...
+                capacity_cycle_by_segment(s), ...
+                100*s/max(n_segments_total,1), ...
+                seg.soc(end), ...
+                seg.voltage(end));
+            drawnow;
+        end
         if ~isempty(opt.SegmentCallback)
             opt.SegmentCallback(seg, s, segments(s), capacity_cycle_by_segment(s));
         end
@@ -241,7 +254,7 @@ function sim = sim_profile_sequence_LGM50(model_name, init_soc, profile_sequence
 end
 
 function segments_rep = repeat_segments(segments_base, repeat_count)
-    segments_rep = struct('name', {}, 'crate', {}, 'rest_hours', {}, 'cycle', {}, 'segment_in_cycle', {});
+    segments_rep = struct('name', {}, 'crate', {}, 'rest_hours', {}, 'cc_duration_hours', {}, 'cycle', {}, 'segment_in_cycle', {});
     n = numel(segments_base);
     for c = 1:repeat_count
         for s = 1:n
@@ -249,6 +262,7 @@ function segments_rep = repeat_segments(segments_base, repeat_count)
                 'name', segments_base(s).name, ...
                 'crate', segments_base(s).crate, ...
                 'rest_hours', segments_base(s).rest_hours, ...
+                'cc_duration_hours', get_segment_field_or(segments_base(s), 'cc_duration_hours', NaN), ...
                 'cycle', c, ...
                 'segment_in_cycle', s);
         end
@@ -325,7 +339,11 @@ end
 
 function out = run_segment(model_name, init_soc, seg, opt, init_state, segment_idx, n_segments_total)
     if strcmp(seg.name, 'CC')
-        prof = {'CC', seg.crate};
+        if isfield(seg, 'cc_duration_hours') && isfinite(seg.cc_duration_hours) && seg.cc_duration_hours > 0
+            prof = {'CC', seg.crate, seg.cc_duration_hours};
+        else
+            prof = {'CC', seg.crate};
+        end
     elseif strcmp(seg.name, 'REST')
         prof = {'REST', seg.rest_hours};
     else
@@ -340,10 +358,13 @@ function out = run_segment(model_name, init_soc, seg, opt, init_state, segment_i
             '''DeltaT'', opt.DeltaT, ''Tamb'', opt.Tamb, ''ECMOrder'', opt.ECMOrder, ' ...
             '''Crate'', opt.Crate, ''DegradationModel'', opt.DegradationModel, ' ...
             '''ElectrolyteModel'', opt.ElectrolyteModel, ' ...
+            '''UseElectrolyteActivity'', opt.UseElectrolyteActivity, ' ...
             '''EnableLithiumPlating'', opt.EnableLithiumPlating, ' ...
             '''EnableAnodePorosityLoss'', opt.EnableAnodePorosityLoss, ' ...
             '''DFNLplCouplingMode'', opt.DFNLplCouplingMode, ' ...
-            '''VEnd'', opt.VEnd, ''InitialState'', init_state, ' ...            '''SuppressSummary'', true, ''SPMeOutputs'', opt.SPMeOutputs, ''SaveOutput'', false, ' ...
+            '''DFNJacobianMode'', opt.DFNJacobianMode, ' ...
+            '''VEnd'', opt.VEnd, ''InitialState'', init_state, ' ...
+            '''SuppressSummary'', true, ''SPMeOutputs'', opt.SPMeOutputs, ''SaveOutput'', false, ' ...
             '''DiagnosticsFile'', step_diagnostics_file, ''DiagnosticContext'', diagnostic_context, ' ...
             '''SPMeParamOverrides'', opt.SPMeParamOverrides);']);
     catch ME
@@ -367,7 +388,7 @@ function segments = parse_profile_sequence(profile_sequence)
         if ~ismember(name, valid_dynamic)
             error('Unknown profile token: %s', name);
         end
-        segments = struct('name', name, 'crate', NaN, 'rest_hours', NaN);
+        segments = struct('name', name, 'crate', NaN, 'rest_hours', NaN, 'cc_duration_hours', NaN);
         return;
     end
 
@@ -375,7 +396,7 @@ function segments = parse_profile_sequence(profile_sequence)
         error('profile_sequence must be char/string or a cell token sequence.');
     end
 
-    segments = struct('name', {}, 'crate', {}, 'rest_hours', {});
+    segments = struct('name', {}, 'crate', {}, 'rest_hours', {}, 'cc_duration_hours', {});
     i = 1;
     while i <= numel(profile_sequence)
         tok = profile_sequence{i};
@@ -388,17 +409,26 @@ function segments = parse_profile_sequence(profile_sequence)
                     ~isscalar(profile_sequence{i+1}) || profile_sequence{i+1} == 0
                 error('CC token at position %d must be followed by non-zero scalar Crate.', i);
             end
-            segments(end+1) = struct('name', 'CC', 'crate', profile_sequence{i+1}, 'rest_hours', NaN); %#ok<AGROW>
-            i = i + 2;
+            cc_duration_hours = NaN;
+            advance = 2;
+            if i+2 <= numel(profile_sequence) && isnumeric(profile_sequence{i+2}) && ...
+                    isscalar(profile_sequence{i+2}) && isfinite(profile_sequence{i+2}) && profile_sequence{i+2} > 0
+                % Optional third CC token: fixed duration in hours. This
+                % is used for HPPC-like pulses that should not run to Vmin/Vmax.
+                cc_duration_hours = profile_sequence{i+2};
+                advance = 3;
+            end
+            segments(end+1) = struct('name', 'CC', 'crate', profile_sequence{i+1}, 'rest_hours', NaN, 'cc_duration_hours', cc_duration_hours); %#ok<AGROW>
+            i = i + advance;
         elseif strcmp(name, 'REST')
             if i+1 > numel(profile_sequence) || ~isnumeric(profile_sequence{i+1}) || ...
                     ~isscalar(profile_sequence{i+1}) || ~isfinite(profile_sequence{i+1}) || profile_sequence{i+1} <= 0
                 error('REST token at position %d must be followed by positive scalar duration in hours.', i);
             end
-            segments(end+1) = struct('name', 'REST', 'crate', 0, 'rest_hours', profile_sequence{i+1}); %#ok<AGROW>
+            segments(end+1) = struct('name', 'REST', 'crate', 0, 'rest_hours', profile_sequence{i+1}, 'cc_duration_hours', NaN); %#ok<AGROW>
             i = i + 2;
         elseif ismember(name, valid_dynamic)
-            segments(end+1) = struct('name', name, 'crate', NaN, 'rest_hours', NaN); %#ok<AGROW>
+            segments(end+1) = struct('name', name, 'crate', NaN, 'rest_hours', NaN, 'cc_duration_hours', NaN); %#ok<AGROW>
             i = i + 1;
         else
             error('Unknown profile token at position %d: %s', i, name);
@@ -406,6 +436,14 @@ function segments = parse_profile_sequence(profile_sequence)
     end
     if isempty(segments)
         error('profile_sequence cannot be empty.');
+    end
+end
+
+function val = get_segment_field_or(s, name, default_val)
+    if isstruct(s) && isfield(s, name) && ~isempty(s.(name))
+        val = s.(name);
+    else
+        val = default_val;
     end
 end
 

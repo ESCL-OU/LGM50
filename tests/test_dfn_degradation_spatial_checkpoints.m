@@ -21,6 +21,7 @@ function out = test_dfn_degradation_spatial_checkpoints(resume_file)
     enable_lithium_plating = true;
     enable_anode_porosity_loss = true;
     dfn_lpl_coupling_mode = 'spme_compatible';
+    dfn_jacobian_mode = 'padded_analytic';
 
     init_soc = 0.1;
     sequence1 = {'REST', 0.25, 'CC', -0.2, 'REST', 0.25, 'CC', 0.2};
@@ -111,6 +112,7 @@ function out = test_dfn_degradation_spatial_checkpoints(resume_file)
     settings.enable_lithium_plating = enable_lithium_plating;
     settings.enable_anode_porosity_loss = enable_anode_porosity_loss;
     settings.dfn_lpl_coupling_mode = dfn_lpl_coupling_mode;
+    settings.dfn_jacobian_mode = dfn_jacobian_mode;
     settings.init_soc = init_soc;
     settings.sequence1 = {sequence1};
     settings.sequence2 = {sequence2};
@@ -130,6 +132,7 @@ function out = test_dfn_degradation_spatial_checkpoints(resume_file)
     fprintf('DFN spatial checkpoint run started.\n');
     fprintf('Output file: %s\n', output_file);
     fprintf('Mode: %s\n', dfn_lpl_coupling_mode);
+    fprintf('Jacobian mode: %s\n', dfn_jacobian_mode);
     fprintf('Total segments: %d\n', numel(segments));
 
     %% Main segment loop
@@ -152,6 +155,7 @@ function out = test_dfn_degradation_spatial_checkpoints(resume_file)
         'EnableLithiumPlating', enable_lithium_plating, ...
         'EnableAnodePorosityLoss', enable_anode_porosity_loss, ...
         'DFNLplCouplingMode', dfn_lpl_coupling_mode, ...
+        'DFNJacobianMode', dfn_jacobian_mode, ...
         'SaveOutput', false, ...
         'ShowProgress', show_progress, ...
         'MemoryLight', memory_light, ...
@@ -168,7 +172,8 @@ function out = test_dfn_degradation_spatial_checkpoints(resume_file)
 end
 
 function dfn_segment_checkpoint_callback(seg, seg_idx, seg_info, cycle_idx, ...
-        output_file, latest_file, settings, checkpoint_cycle_interval)
+        output_file, latest_file, settings, checkpoint_cycle_interval, ...
+        sequence1_repeat, sequence2_repeat)
 
     persistent snapshots segment_log
 
@@ -202,11 +207,16 @@ function dfn_segment_checkpoint_callback(seg, seg_idx, seg_info, cycle_idx, ...
         segment_log(end+1) = log_entry; %#ok<AGROW>
     end
 
-    should_snapshot = mod(cycle_idx, checkpoint_cycle_interval) == 0 || cycle_idx == 1;
+    [snapshot_tag, should_snapshot] = classify_dfn_checkpoint(seg_info, cycle_idx, ...
+        sequence1_repeat, sequence2_repeat);
 
     if should_snapshot
         snap = make_dfn_spatial_snapshot_local(seg, cycle_idx, seg_idx, ...
             seg.time(end), charged_ah, discharged_ah);
+        snap.tag = snapshot_tag;
+        snap.cycle_idx = cycle_idx;
+        snap.segment_name = seg_info.name;
+        snap.segment_crate = seg_info.crate;
 
         if isempty(snapshots)
             snapshots = snap;
@@ -448,4 +458,43 @@ function init_state = terminal_state_from_sim_local(sim)
     init_state.x = sim.x(:, end);
     init_state.z = sim.z(:, end);
     init_state.p = sim.p;
+end
+
+function [tag, tf] = classify_dfn_checkpoint(seg_info, cycle_idx, sequence1_repeat, sequence2_repeat)
+
+    tag = '';
+    tf = false;
+
+    if ~strcmp(seg_info.name, 'CC')
+        return;
+    end
+
+    crate = seg_info.crate;
+
+    if abs(crate + 0.2) < 1e-12
+        tag = '0p2C_charge';
+        tf = true;
+        return;
+    elseif abs(crate - 0.2) < 1e-12
+        tag = '0p2C_discharge';
+        tf = true;
+        return;
+    end
+
+    if abs(crate + 1.0) < 1e-12
+        base_tag = '1C_charge';
+    elseif abs(crate - 1.0) < 1e-12
+        base_tag = '1C_discharge';
+    else
+        return;
+    end
+
+    first_cycle = sequence1_repeat + 1;
+    middle_cycle = sequence1_repeat + ceil(sequence2_repeat/2);
+    last_cycle = sequence1_repeat + sequence2_repeat;
+
+    if ismember(cycle_idx, [first_cycle, middle_cycle, last_cycle])
+        tag = base_tag;
+        tf = true;
+    end
 end

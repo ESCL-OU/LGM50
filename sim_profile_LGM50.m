@@ -95,6 +95,7 @@ function sim = sim_profile_LGM50(model_name, init_soc, profile_def, varargin)
     addParameter(parser, 'EnableLithiumPlating', []);
     addParameter(parser, 'EnableAnodePorosityLoss', []);
     addParameter(parser, 'DFNLplCouplingMode', 'spme_compatible');
+    addParameter(parser, 'DFNJacobianMode', 'padded_analytic');
     addParameter(parser, 'Nsei', 10); % added for Safari's SEI model
     addParameter(parser, 'EpsilonSEI', 0.05);  % added for Safari's SEI model 
     addParameter(parser, 'VEnd', []);
@@ -178,7 +179,7 @@ function sim = sim_profile_LGM50(model_name, init_soc, profile_def, varargin)
         error('VEnd must be a finite scalar when provided.');
     end
 
-    [profile_name, crate_single, rest_hours_single] = parse_single_profile(profile_def, opt.Crate);
+    [profile_name, crate_single, rest_hours_single, cc_duration_hours_single] = parse_single_profile(profile_def, opt.Crate);
     if strcmp(profile_name, 'CC')
         opt.Crate = crate_single;
     end
@@ -193,10 +194,17 @@ function sim = sim_profile_LGM50(model_name, init_soc, profile_def, varargin)
         if opt.Crate == 0
             error('For CC mode, Crate must be non-zero.');
         end
-        % For CC modes, generate a long-enough horizon and terminate by voltage.
-        max_time_s = ceil(1.5 * 3600 / abs(opt.Crate));
+        if ~isnan(cc_duration_hours_single)
+            % Fixed-duration CC pulse. This is intended for HPPC-like
+            % identifiability profiles and is NOT meant to run to VEnd.
+            max_time_s = cc_duration_hours_single * 3600;
+        else
+            % Backward-compatible CC mode: long-enough horizon, optionally
+            % terminated later by voltage.
+            max_time_s = ceil(1.5 * 3600 / abs(opt.Crate));
+        end
         NT = max(2, floor(max_time_s / max(opt.DeltaT, eps)) + 1);
-        t_profile = (0:NT-1)';
+        t_profile = (0:NT-1)' * opt.DeltaT;
         t_profile_full = t_profile;
         I = [];
     elseif is_rest_profile
@@ -336,16 +344,20 @@ function sim = sim_profile_LGM50(model_name, init_soc, profile_def, varargin)
             end
             req_spme_out = normalize_name_list(opt.SPMeOutputs);
             spme_out_vals = [];
+            I_out = I;
+            if ~isempty(I_out)
+                I_out = [0; I(1:end-1)];
+            end
             if ~isempty(req_spme_out)
                 spme_out_vals = zeros(numel(req_spme_out), NT);
-                out0 = spme_ss.optional_outputs(x0, I(1), req_spme_out);
+                out0 = spme_ss.optional_outputs(x0, I_out(1), req_spme_out);
                 for ii = 1:numel(req_spme_out)
                     spme_out_vals(ii, 1) = out0.(req_spme_out{ii});
                 end
             end
 
             x = zeros(length(x0), NT);
-            y0 = spme_ss.h('x', x0, 'p', I(1));
+            y0 = spme_ss.h('x', x0, 'p', I_out(1));
             y = zeros(length(full(y0.y)), NT);
             x(:, 1) = x0;
             y(:, 1) = full(y0.y);
@@ -354,12 +366,13 @@ function sim = sim_profile_LGM50(model_name, init_soc, profile_def, varargin)
             termination_reason = '';
 
             for k = 1:NT-1
+                I_step = I(k);
                 try
-                    [x(:, k+1), y(:, k+1)] = spme_ss.step(x(:, k), I(k));
+                    [x(:, k+1), y(:, k+1)] = spme_ss.step(x(:, k), I_step);
                 catch ME
                     diagnostics_file = save_spme_step_failure_diagnostics( ...
                         opt.DiagnosticsFile, opt.DiagnosticContext, ME, ...
-                        profile_name, init_soc, p, spme_solver, t, t_profile, I, ...
+                        profile_name, init_soc, p, spme_solver, t, t_profile, I_out, ...
                         x, y, k, req_spme_out, spme_out_vals);
                     if ~isempty(diagnostics_file)
                         fprintf(2, ['SPMe step diagnostics saved before rethrowing solver failure:\n' ...
@@ -368,7 +381,7 @@ function sim = sim_profile_LGM50(model_name, init_soc, profile_def, varargin)
                     rethrow(ME);
                 end
                 if ~isempty(req_spme_out)
-                    outk = spme_ss.optional_outputs(x(:, k+1), I(k), req_spme_out);
+                    outk = spme_ss.optional_outputs(x(:, k+1), I_step, req_spme_out);
                     for ii = 1:numel(req_spme_out)
                         spme_out_vals(ii, k+1) = outk.(req_spme_out{ii});
                     end
@@ -417,7 +430,7 @@ function sim = sim_profile_LGM50(model_name, init_soc, profile_def, varargin)
             sim.profile = profile_name;
             sim.profile_time = t_profile(1:t_last);
             sim.time = t(1:t_last);
-            sim.current = I(1:t_last);
+            sim.current = I_out(1:t_last);
             sim.voltage = y(1, 1:t_last).';
             sim.soc = y(2, 1:t_last).';
             sim.c_s_n = x(1:p.Nr-1, 1:t_last);
@@ -476,7 +489,7 @@ function sim = sim_profile_LGM50(model_name, init_soc, profile_def, varargin)
             end
             p = load_DFN_params(init_soc, t_amb, delta_t, disable_thermal, ...
                 Nr, Nxn, Nxs, Nxp, degradation_model, enable_lithium_plating, ...
-                enable_anode_porosity_loss, dfn_lpl_coupling_mode);
+                enable_anode_porosity_loss, dfn_lpl_coupling_mode, opt.DFNJacobianMode);
             if is_cc_profile
                 I = (p.OneC * opt.Crate) * ones(NT, 1);
             end
@@ -782,10 +795,11 @@ function sim = sim_profile_LGM50(model_name, init_soc, profile_def, varargin)
     end
 end
 
-function [profile_name, crate_single, rest_hours_single] = parse_single_profile(profile_def, default_crate)
+function [profile_name, crate_single, rest_hours_single, cc_duration_hours_single] = parse_single_profile(profile_def, default_crate)
     valid_dynamic = {'BJDST', 'DST', 'FUDS', 'US06'};
     crate_single = NaN;
     rest_hours_single = NaN;
+    cc_duration_hours_single = NaN;
     if ischar(profile_def) || isstring(profile_def)
         profile_name = upper(char(profile_def));
         if strcmp(profile_name, 'CC')
@@ -799,30 +813,40 @@ function [profile_name, crate_single, rest_hours_single] = parse_single_profile(
             error('For REST mode, use profile_def={''REST'', duration_hours}.');
         end
         if ~ismember(profile_name, valid_dynamic)
-            error('profile_def must be one of BJDST, DST, FUDS, US06, ''CC'', {''CC'', crate}, or {''REST'', duration_hours}.');
+            error('profile_def must be one of BJDST, DST, FUDS, US06, ''CC'', {''CC'', crate}, {''CC'', crate, duration_hours}, or {''REST'', duration_hours}.');
         end
         return;
     end
 
     if ~iscell(profile_def)
-        error('profile_def must be char/string for one profile, or {''CC'', crate}/{''REST'', hours}.');
+        error('profile_def must be char/string for one profile, or {''CC'', crate}, {''CC'', crate, duration_hours}, or {''REST'', hours}.');
     end
 
-    if numel(profile_def) ~= 2 || ~(ischar(profile_def{1}) || isstring(profile_def{1})) || ...
+    if ~(numel(profile_def) == 2 || numel(profile_def) == 3) || ...
+            ~(ischar(profile_def{1}) || isstring(profile_def{1})) || ...
             ~isnumeric(profile_def{2}) || ~isscalar(profile_def{2}) || ...
             ~isfinite(profile_def{2})
         error(['sim_profile_LGM50 supports a single profile only. ', ...
                'Use sim_profile_sequence_LGM50 for concatenated profiles, ', ...
-               'or pass profile_def={''CC'',crate} / {''REST'',hours}.']);
+               'or pass profile_def={''CC'',crate}, {''CC'',crate,duration_hours}, or {''REST'',hours}.']);
     end
     token = upper(char(profile_def{1}));
     if strcmp(token, 'CC')
         if profile_def{2} == 0
             error('For {''CC'', crate}, crate must be non-zero.');
         end
+        if numel(profile_def) == 3
+            if ~isnumeric(profile_def{3}) || ~isscalar(profile_def{3}) || ~isfinite(profile_def{3}) || profile_def{3} <= 0
+                error('For {''CC'', crate, duration_hours}, duration_hours must be positive.');
+            end
+            cc_duration_hours_single = profile_def{3};
+        end
         profile_name = 'CC';
         crate_single = profile_def{2};
     elseif strcmp(token, 'REST')
+        if numel(profile_def) ~= 2
+            error('REST profile must be {''REST'', duration_hours}.');
+        end
         if profile_def{2} <= 0
             error('For {''REST'', duration_hours}, duration_hours must be positive.');
         end
@@ -1100,4 +1124,3 @@ function y = char_or_empty(x)
         y = char(x);
     end
 end
-

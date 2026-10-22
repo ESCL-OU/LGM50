@@ -11,7 +11,7 @@ function out = test_spme_degradation_addons_sequence_plot(resume_checkpoint_file
 
     %% User settings
     degradation_model = 'safari';        % 'ramadass', 'yang', or 'safari'
-    enable_lithium_plating = true;
+    enable_lithium_plating = false;
     enable_anode_porosity_loss = true;
 
     init_soc = 0.1;
@@ -39,7 +39,7 @@ function out = test_spme_degradation_addons_sequence_plot(resume_checkpoint_file
     end
     enable_diagnostics = logical(enable_diagnostics);
     if nargin < 3 || isempty(electrolyte_model)
-        electrolyte_model = 'fdm';
+        electrolyte_model = 'fvm';
     end
     electrolyte_model = lower(char(electrolyte_model));
     if ~ismember(electrolyte_model, {'fdm', 'fvm'})
