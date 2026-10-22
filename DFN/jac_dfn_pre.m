@@ -15,6 +15,12 @@ Np = p.Nxp - 1;
 Nnp = Nn+Np;
 Nx = p.Nx - 3;
 Nz = 3*Nnp + Nx + 2;
+if isfield(p, 'dfn_degradation_enabled') && p.dfn_degradation_enabled
+    Ndeg = 3*Nn;
+else
+    Ndeg = 0;
+end
+Nx_ode = Nc + Ndeg + 1;
 
 ind_csn = 1:Ncsn;
 ind_csp = Ncsn+1:Ncsn+Ncsp;
@@ -34,9 +40,9 @@ ind_jn = 2*Nnp+Nx+3 : 2*Nnp+Nx+2+Nn;
 ind_jp = 2*Nnp+Nx+3+Nn : Nz;
 
 %% Preallocate Jacobian
-f_x = zeros(Nc+1);
-f_z = zeros(Nc+1,Nz);
-g_x = zeros(Nz,Nc+1);
+f_x = zeros(Nx_ode);
+f_z = zeros(Nx_ode,Nz);
+g_x = zeros(Nz,Nx_ode);
 g_z = zeros(Nz);
 
 %% Li Diffusion in Solid Phase: c_s(x,r,t)

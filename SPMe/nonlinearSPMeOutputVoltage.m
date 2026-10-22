@@ -1,7 +1,7 @@
 %% Nonlinear output for SPMe voltage
 %   Created April 28, 2025 by Wonoo Choo
 
-function [V, varargout] = nonlinearSPMeOutputVoltage(p,c_ss_n,c_ss_p, c_ex,I)
+function [V, varargout] = nonlinearSPMeOutputVoltage(p,c_ss_n,c_ss_p, c_ex,I, varargin)
 
     % Stochiometric Concentration Ratio
     theta_n = c_ss_n / p.c_s_n_max;
@@ -32,11 +32,21 @@ function [V, varargout] = nonlinearSPMeOutputVoltage(p,c_ss_n,c_ss_p, c_ex,I)
     [i_0n,i_0p] = exch_cur_dens(p,c_ss_n,c_ss_p,ce_bar,p.T_amb);
     RTaF=(p.R*p.T_amb)/(p.alph*p.Faraday);
     
+    % Optional SEI thickness state [m]
+    if nargin >= 6
+        delta_sei = varargin{1};
+    else
+        delta_sei = 0;
+    end
+
+    R_tot_n = p.R_f_n + delta_sei/p.kappa_P;
+    R_tot_p = p.R_f_p;
+
     % Voltage
     eta_n = RTaF * asinh(I / (2*p.a_s_n*p.Area_n*p.L_n*i_0n(1)));
     eta_p = RTaF * asinh(-I / (2*p.a_s_p*p.Area_p*p.L_p*i_0p(end)));
     V_noVCE =  eta_p - eta_n + Upref - Unref ...
-        - (p.R_f_n/(p.a_s_n*p.L_n*p.Area_n) + p.R_f_p/(p.a_s_p*p.L_p*p.Area_p))*I;
+        - (R_tot_n/(p.a_s_n*p.L_n*p.Area_n) + R_tot_p/(p.a_s_p*p.L_p*p.Area_p))*I;
     
     % Overpotentials due to electrolyte subsystem
     kap_n = electrolyteCond(p, cen_bar, p.T_amb);
@@ -50,11 +60,26 @@ function [V, varargout] = nonlinearSPMeOutputVoltage(p,c_ss_n,c_ss_p, c_ex,I)
     % Overpotential due to electrolyte conductivity
     V_electrolyteCond = (p.L_n/(2*kap_n_eff) + 2*p.L_s/(2*kap_s_eff) + p.L_p/(2*kap_p_eff))*I; ...
             
+    % Activity-coefficient correction toggle for electrolyte polarization.
+    use_electrolyte_activity = false;
+    if isfield(p, 'use_electrolyte_activity') && ~isempty(p.use_electrolyte_activity)
+        use_electrolyte_activity = logical(p.use_electrolyte_activity);
+    end
+    if use_electrolyte_activity
+        dfca_n = electrolyteAct(cen_bar, p.T_amb, p);
+        dfca_s = electrolyteAct(ces_bar, p.T_amb, p);
+        dfca_p = electrolyteAct(cep_bar, p.T_amb, p);
+    else
+        dfca_n = 0;
+        dfca_s = 0;
+        dfca_p = 0;
+    end
+
     % Overpotential due to electrolyte polarization
     V_electrolytePolar = (2*p.R*p.T_amb)/(p.Faraday) * ...
-                            (1 * (log(cens) - log(ce0n)) ...
-                            +1 * (log(cesp) - log(cens)) ...
-                            +1 * (log(ce0p) - log(cesp)));
+                            ((1+dfca_n) * (log(cens) - log(ce0n)) ...
+                            +(1+dfca_s) * (log(cesp) - log(cens)) ...
+                            +(1+dfca_p) * (log(ce0p) - log(cesp)));
 
     % Add 'em up!
     V = V_noVCE + V_electrolyteCond + V_electrolytePolar;

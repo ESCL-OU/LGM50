@@ -76,9 +76,9 @@ p.sig_p = 0.18;    % Conductivity of solid in pos. electrode, [1/Ohms*m]
 % Miscellaneous
 p.t_plus = 0.2594;       % Transference number
 p.Faraday = 96485.33212;    % Faraday's constant, [Coulumbs/mol]
-p.Area_n = 0.0997;%0.0997;%0.1033; %0.1027; 1033        % Electrode current collector area [m^2] (Is this not electrode cross-sectional area)
-p.Area_s = 0.0997;%0.0997;%0.1023; % Average of area_n and area_p
-p.Area_p = 0.0997;%0.0997;%0.1033; %0.10135;        % Electrode current collector area [m^2] (Is this not electrode cross-sectional area)
+p.Area_n = 0.1027;%0.0997;%0.1033; %0.1027; 1033        % Electrode current collector area [m^2] (Is this not electrode cross-sectional area)
+p.Area_s = 0.1027;%0.0997;%0.1023; % Average of area_n and area_p
+p.Area_p = 0.1027;%0.0997;%0.1033; %0.10135;        % Electrode current collector area [m^2] (Is this not electrode cross-sectional area)
 p.Area_ref = mean([p.Area_n, p.Area_p]);
 
 %% Kinetic Params
@@ -147,10 +147,38 @@ p.volt_min = 2.5;
 %   NOTE: These parameters have NOT been experimentally validated by eCAL
 
 p.kappa_P = 1;      % [S/m] conductivity of side rxn product
-p.M_P = 7.3e1;      % [kg/mol] molecular weight of side rxn product
+p.M_P = 0.162;      % [kg/mol] molecular weight of side rxn product (taken from Yang2017)
 p.rho_P = 2.1e3;    % [kg/m^3] mass density of side rxn product
-p.i0s = 0; %1.5e-6;     % [A/m^2] exchange current density of side rxn
+p.i0s = 1.5e-6;     % [A/m^2] exchange current density of side rxn
 p.Us = 0.4;         % [V] reference potential of side rxn
+
+%   SEI Layer Growth model
+%   Adopted from Yang et al (2017) [PennState Univ]
+%   "Modeling of lithium plating induced aging of lithium-ion batteries:
+%   Transition from linear to nonlinear aging"
+%   DOI: https://doi.org/10.1016/j.jpowsour.2017.05.110
+%   NOTE: These parameters have NOT been experimentally validated by ESCL
+
+p.kappa_sei = 5.0e-6;   % [S/m] ionic conductivity of SEI
+p.k0_sei = 1.0e-12;     % [m/s] kinetic rate constant of SEI
+p.U_sei = p.Us;         % [V] equilibrium potential of SEI formation reaction
+p.D_ec = 2.0e-18;       % [m^2/s] Diffusivity of EC
+p.c0_ec = 4.541e3;        % [mol/m^3] concentration of EC in the bulk electrolyte
+p.M_sei = 0.162;        % [kg/mol] molor weight of SEI
+p.rho_sei = 1690;       % [kg/m^3] molor density of SEI
+p.M_li = 6.94e-3;       % [kg/mol] molor weight of lithium metal
+p.rho_li = 534;         % [kg/m^3] molor density of lithium metal
+
+%   Li plating side-reaction submodel
+%   Source/purpose: Yang et al. (2017), Eq. 12, lithium plating side reaction.
+p.i0_lpl = 1.0e-3;      % [A/m^2] exchange current density for Li plating
+p.alph_lpl = p.alph;    % [-] transfer coefficient for Li plating
+
+%   Optional Yang et al. (2017) aging add-ons. Disabled by default for all
+%   SEI models; enable explicitly to combine with Ramadass, Yang, or Safari SEI.
+p.enable_lithium_plating = false;      % Li plating submodel switch
+p.enable_anode_porosity_loss = false;  % Porosity-loss submodel switch
+
 
 %% Discretization parameters
 % Discrete time step
@@ -160,10 +188,10 @@ p.delta_t = 1;
 p.PadeOrder = 3;
 
 % Finite difference points along x-coordinate
-p.Nr = 30;
-p.Nxn = 70;
-p.Nxs = 35;
-p.Nxp = 70;
+p.Nr = 15;
+p.Nxn = 10;
+p.Nxs = 5;
+p.Nxp = 10;
 p.Nx = p.Nxn+p.Nxs+p.Nxp;
 
 p.delta_x_n = 1 / p.Nxn;

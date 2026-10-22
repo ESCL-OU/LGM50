@@ -11,16 +11,14 @@ This repository incorporates code from the SPMeT project, which is licensed unde
 ## Modifications relative to fastDFN and SPMeT
 
 - **DFN implementation (based on `fastDFN` [3])**
-  - **Initialization of concentrations**: the original `fastDFN` code initializes electrode and electrolyte concentrations using `init_cs(p, v)`. In this repository, concentrations are instead initialized from:
-    - experimentally derived concentration levels corresponding to specific SOC values, as reported in [1] and [2], or
-    - steady-state DFN simulations at the desired SOC level.
+  - **Initialization via `init_cs` (Scott Moura style)**: initial electrode concentrations are computed with `init_cs(p, V)` from `param/params_LGM50.m`.
+  - **Added SoC-to-voltage initializer**: this repository adds `calculate_equilibrium_voltage_from_soc.m`, which converts target SoC to equilibrium voltage, then uses `init_cs` for concentration initialization. In the original Scott Moura flow, users typically specify the initial voltage directly.
   - **Thermal dynamics switch**: a parameter flag (e.g., `disable_thermal`) has been added so that the thermal dynamics in the DFN model from [3] can be turned on or off, enabling both isothermal and electrochemical–thermal simulations with a single code base.
 
 - **SPMe implementation (based on `SPMeT` [4])**
   - **Thermal dynamics removed**: only the electrochemical SPMe model from the original SPMeT repository is used; its thermal dynamics are neglected here.
-  - **SEI layer growth neglected**: SEI growth dynamics present in the SPMeT model of [4] are ignored in this implementation.
-  - **CasADi-based class formulation**: the SPMe model has been refactored into a CasADi-based MATLAB class `SPMe/SPMe.m` that encapsulates parameter loading, state initialization, single-step integration, and voltage/output functions that were originally distributed across multiple scripts in [4].
-  - **Initialization of concentrations**: similar to the DFN case, initial solid and electrolyte concentrations are no longer obtained via `init_cs(p, v)`, but are instead set from experimentally based concentration levels derived from [1] and [2] or from simulated profiles at the corresponding SOC level.
+  - **CasADi-based class formulation**: the SPMe model has been refactored into a CasADi-based MATLAB class `SPMe/SPMe.m` that encapsulates state dynamics, single-step integration, voltage outputs, voltage-term decomposition, and optional diagnostic outputs.
+  - **Configurable degradation models**: SPMe can run without degradation or with SEI growth models based on Ramadass, Yang, or Safari. Lithium plating and anode porosity-loss add-ons can be enabled independently for SEI-enabled SPMe simulations.
 
 # Install Requirements
 
@@ -47,281 +45,210 @@ disp(jacobian(sin(x),x))
 The output should display `cos(x)` to confirm that CasADi functions are working correctly.
 
 
-# To Run
-Simply open and run the simulation from MATLAB from the choices of `sim_<model>_<current profile>.m` in home directory
+# Running simulations
 
+The main simulation entry points are:
 
-# Using the DFN battery model
+- `sim_profile_LGM50.m`: run one profile segment.
+- `sim_profile_sequence_LGM50.m`: run concatenated profile segments continuously, with state handoff between segments.
 
-The Doyle–Fuller–Newman (DFN) model is implemented in the `DFN` folder and exercised by the example scripts `sim_DFN_CC.m` (constant current) and `sim_DFN_CCCV.m` (CC–CV charging). Refer to [DFN2DAEs.pdf](https://github.com/scott-moura/fastDFN/blob/master/Resources/DFN2DAEs.pdf) from Dr. Moura's repository for numerical implementation. 
+Both functions use SoC-based initialization:
 
-- **Parameters and initial conditions**
-  - **`load_DFN_params.m`**: builds the parameter struct `p` from `param/params_LGM50.m`, chooses discretization, and constructs all matrices needed by the DFN model.
-  - It also creates:
-    - **`p.x0`**: initial differential state vector.
-    - **`p.z0`**: initial algebraic state vector.
-    - **`p.y0`**: initial output vector `[Volt; SOC; …]`.
-  - Typical usage:
+1. `calculate_equilibrium_voltage_from_soc(init_soc)` computes an equilibrium voltage.
+2. `init_cs` computes initial electrode concentrations from that voltage.
+3. The selected model builds its state vector from those concentrations, unless an `InitialState` is provided for continuation.
 
-```matlab
-addpath("DFN"); addpath("param");
+## Supported Models And Profiles
 
-init_SOC       = 0.3;      % initial SOC (fraction)
-t_amb          = 25;       % ambient temperature [degC]
-delta_t        = 1.0;      % simulation time step [s]
-load_init      = true;     % use pre-saved DFN initial condition
-disable_thermal = true;    % ignore temperature dynamics if desired
-disable_sei     = true;    % SEI disabled in this implementation
+Supported model names are:
 
-p = load_DFN_params(init_SOC, t_amb, load_init, delta_t, ...
-                    disable_thermal, disable_sei);
+- `SPMe`
+- `DFN`
+- `ECM`
 
-x = p.x0;   % differential states at current step
-z = p.z0;   % algebraic states at current step
-y = p.y0;   % outputs at current step
-```
+Supported profile definitions are:
 
-### DFN state vectors `x`, `z`, and output `y`
+- Dynamic drive profiles: `BJDST`, `DST`, `FUDS`, `US06`
+- Constant-current profile: `{'CC', crate}`
+- Rest profile: `{'REST', duration_hours}`
 
-The DFN is formulated as a semi‑explicit DAE:
-\[
-\dot{x} = f(x,z,I,p), \quad 0 = g(x,z,I,p), \quad y = h(x,z,I,p)
-\]
+Current sign convention:
 
-- **Differential states `x`** (vector length `Ncsn + Ncsp + Nce + 1`)
-  - `Ncsn = p.PadeOrder * (p.Nxn-1)` : solid-phase concentration modes in the negative electrode.
-  - `Ncsp = p.PadeOrder * (p.Nxp-1)` : solid-phase concentration modes in the positive electrode.
-  - `Nce = p.Nx - 3` : electrolyte concentration nodes across the cell (excluding boundary points).
-  - Layout in `x`:
-    - **`c_s_n`** (`Ncsn × 1`): Pade states for solid concentration in the negative electrode.
-    - **`c_s_p`** (`Ncsp × 1`): Pade states for solid concentration in the positive electrode.
-    - **`c_e`** (`Nce × 1`): electrolyte concentration along `x`.
-    - **`T`** (`1 × 1`): cell temperature (if `disable_thermal == false`; otherwise held fixed).
+- `crate > 0`: discharge
+- `crate < 0`: charge
 
-- **Algebraic states `z`** (vector length `3*(Nn+Np) + Nx + 2`)
-  - `Nn = p.Nxn-1`, `Np = p.Nxp-1`, `Nx = p.Nx-3`.
-  - Layout in `z`:
-    - **`phi_s_n`** (`Nn × 1`): solid potential in negative electrode.
-    - **`phi_s_p`** (`Np × 1`): solid potential in positive electrode.
-    - **`i_en`** (`Nn × 1`): electrolyte current in negative electrode.
-    - **`i_ep`** (`Np × 1`): electrolyte current in positive electrode.
-    - **`phi_e`** (`(Nx+2) × 1`): electrolyte potential across the full cell including interface points.
-    - **`jn`** (`Nn × 1`): interfacial molar flux (negative electrode).
-    - **`jp`** (`Np × 1`): interfacial molar flux (positive electrode).
-
-- **Outputs `y`** (stacked diagnostics, one column per time step)
-  - For a time history, the scripts store `y` as a matrix with size `N_y × N_T`. The helper `parse_y.m` decodes this stack:
-    - **`Volt`** (`1 × N_T`): terminal voltage.
-    - **`SOC`** (`1 × N_T`): cell SOC.
-    - **`eta_pl`** (`Nn × N_T`): overpotential at the negative current collector.
-    - **`c_ss_n`**, **`c_ss_p`**: surface stoichiometries in negative/positive particles.
-    - **`c_avg_n`**, **`c_avg_p`**: volume-averaged solid concentrations in negative/positive particles.
-    - **`c_ex`** (`(Nx+4) × N_T`): electrolyte concentration including boundary values.
-    - **`eta_n`**, **`eta_p`**: Butler–Volmer overpotentials.
-    - **`Unref`**: open-circuit potential of the negative electrode at the surface.
-
-The helper functions `parse_x.m`, `parse_z.m`, and `parse_y.m` reshape the stored histories into physically meaningful 2‑D arrays for post‑processing.
-
-### Monitoring lithium plating risk (negative electrode plating potential)
-
-Lithium plating is associated with the local potential of the negative electrode dropping below the Li/Li\(^+\) reference, which is captured in the DFN by the **plating overpotential** `eta_pl` (returned in `y` and unpacked by `parse_y.m`).
-
-- **Extracting plating overpotential near the separator**
-  - After a DFN simulation, you can obtain `eta_pl` via:
+Concatenated sequences are passed as token lists:
 
 ```matlab
-[Volt, SOC, eta_pl, c_ss_n, c_ss_p, c_avg_n, c_avg_p, c_ex, eta_n, eta_p, Unref] = parse_y(y, t_last, p);
+{'REST', 0.25, 'CC', -1, 'CC', 1}
 ```
 
-  - `eta_pl` has size `Nn × t_last`, where each row corresponds to a node in the negative electrode from current collector to separator.
-  - The node **closest to the separator** is the last row:
+## Quick Start
 
 ```matlab
-eta_pl_sep = eta_pl(end, :);   % plating overpotential at negative electrode / separator interface
+% One SPMe dynamic segment
+sim = sim_profile_LGM50('SPMe', 0.4, 'DST');
+
+% One DFN 1C charge segment
+sim = sim_profile_LGM50('DFN', 0.4, {'CC', -1});
+
+% One ECM dynamic segment, saved to disk
+sim = sim_profile_LGM50('ECM', 0.4, 'FUDS', 'SaveOutput', true);
+
+% Repeated SPMe charge/discharge sequence
+sim = sim_profile_sequence_LGM50('SPMe', 0.1, {'CC', -1, 'CC', 1}, ...
+    'Repeat', 5);
+
+% Sequence with rests and a voltage window
+sim = sim_profile_sequence_LGM50('SPMe', 0.1, ...
+    {'REST', 0.25, 'CC', -0.5, 'REST', 0.25, 'CC', 0.5}, ...
+    'Repeat', 3, ...
+    'VMin', 2.5, 'VMax', 4.2);
 ```
 
-- **Interpreting `eta_pl_sep`**
-  - When **`eta_pl_sep < 0`**, the local negative electrode potential near the separator is below the plating potential, indicating conditions favorable to lithium plating.
-  - More negative values correspond to **higher plating driving force**, which is strongly correlated with **accelerated degradation** and, in extreme cases, **internal short circuit risk**.
-  - You can monitor this signal during charging to design safer fast‑charge profiles or to enforce constraints in MPC / RL controllers (e.g., keep `eta_pl_sep` above a safety threshold).
+## SPMe Degradation Options
 
-### Time stepping with `step_dfn.m`
+SPMe degradation is configured with `DegradationModel`:
 
-The low‑level time integration is handled by:
+- `none`: no degradation state.
+- `ramadass`: Ramadass-style SEI growth.
+- `yang`: Yang-style SEI growth.
+- `safari`: Safari-style SEI growth with EC diffusion states inside the SEI film.
 
-- **`step_dfn.m`**:
-  - Signature: `[x_next, z_next, y_next, stats] = step_dfn(x, z, Cur_vec, p, verbosity)`.
-  - `Cur_vec = [I_{k-1}, I_k, I_{k+1}]` (in A) is a 3‑point stencil for the applied current used in the Crank–Nicolson time discretization.
-  - Internally:
-    - Updates solid concentration matrices for the current temperature `T = x(end)`.
-    - Calls `cn_dfn.m` to perform a single implicit Crank–Nicolson step on the DAE.
-    - Calls `dae_dfn.m` again at the new state to compute the output vector `y_next`.
-
-- **`cn_dfn.m`**:
-  - Wraps Newton’s method for the nonlinear implicit step.
-  - Solves for consistent algebraic states if the current changes between steps.
-  - Uses `dae_dfn.m` and `jac_dfn.m` repeatedly until convergence, and returns iteration statistics in `stats`.
-
-### Using DFN with a custom current‑generating agent
-
-If you want to drive the DFN with a current that is decided at each time step by a custom agent (e.g. an MPC controller or reinforcement learning policy), you can use `step_dfn.m` directly in your loop.
-
-- **Basic loop structure**
+Lithium plating and anode porosity loss are independent add-ons. They are disabled by default for all SEI models and are ignored when `DegradationModel` is `none`.
 
 ```matlab
-% 1) Set up parameters and initial state
-p = load_DFN_params(init_SOC, t_amb, load_init, delta_t, ...
-                    disable_thermal, disable_sei);
-x = p.x0;
-z = p.z0;
-y = p.y0;
-
-Tsim = 3600;                         % total simulation horizon [s]
-Nt   = floor(Tsim / p.delta_t);      % number of time steps
-
-I_hist = zeros(1, Nt+1);
-I_hist(1) = 0;                       % initial current guess
-
-for k = 1:Nt
-    % 2) Agent observes current state/output and decides next current
-    Volt = y(1);                     % terminal voltage at time k
-    SOC  = y(2);                     % SOC at time k
-    obs  = [Volt; SOC];              % (extend as needed)
-
-    I_k   = agent_policy(obs);       % your custom control law [A]
-    I_hist(k+1) = I_k;
-
-    % 3) Build Cur_vec = [I_{k-1}, I_k, I_{k+1}]
-    if k == 1
-        I_prev = I_hist(1);
-    else
-        I_prev = I_hist(k);
-    end
-
-    % If you do not know I_{k+1} yet, you can approximate
-    I_next = I_k;                    % zero‑order hold
-
-    Cur_vec = [I_prev, I_k, I_next];
-
-    % 4) Advance DFN one time step
-    verbosity = 1;
-    [x, z, y, stats] = step_dfn(x, z, Cur_vec, p, verbosity);
-
-    % 5) Check termination conditions (voltage/SOC limits, etc.)
-    Volt = y(1);
-    SOC  = y(2);
-    if Volt < p.volt_min || Volt > p.volt_max
-        break;
-    end
-end
+sim = sim_profile_sequence_LGM50('SPMe', 0.1, {'CC', -1, 'CC', 1}, ...
+    'Repeat', 10, ...
+    'DegradationModel', 'safari', ...
+    'EnableLithiumPlating', true, ...
+    'EnableAnodePorosityLoss', true, ...
+    'SPMeOutputs', {'delta_sei', 'delta_li', 'delta_film', ...
+                    'epsilon_e_n', 'j_sei', 'j_plating', 'j_side'});
 ```
 
-- **Notes for custom control**
-  - If your agent can compute a full planned sequence of currents, you can populate `Cur_vec` exactly as in `sim_DFN_CC.m`: `Cur_vec = [I(k-1), I(k), I(k+1)]`.
-  - If the agent is strictly causal (decides only the current at the present step), using `Cur_vec = [I_{k-1}, I_k, I_k]` is a reasonable zero‑order approximation.
-  - You can expose richer observations to the agent (e.g. `SOC`, `c_ss_n`, `c_ss_p`, etc.) by unpacking `y` via `parse_y.m`.
+Useful SPMe optional output names include:
 
-### DFN folder contents and roles
+- Degradation states and rates: `delta_sei`, `delta_sei_dot`, `delta_li`, `delta_li_dot`, `delta_film`, `delta_film_dot`
+- Porosity and film resistance: `epsilon_e_n`, `epsilon_e_n_dot`, `R_film`
+- Side-reaction terms: `j_sei`, `j_plating`, `j_side`, `i0s`
+- Side-reaction potentials: `eta_n_side`, `phi_se`, `eta_s`
+- Electrolyte and averaged solid diagnostics: `cen_bar`, `ces_bar`, `cep_bar`, `cs_ave_n`, `cs_ave_p`
 
-The `DFN` folder contains the core numerical implementation of the DFN model:
+## Single-Segment Options
 
-- **`step_dfn.m`**: single‑step time advancement wrapper (builds solid concentration matrices at current `T`, calls `cn_dfn`, and computes `y`).
-- **`cn_dfn.m`**: Crank–Nicolson nonlinear solver for the DAE using Newton iterations.
-- **`dae_dfn.m`**: defines the DFN differential and algebraic equations (`f`, `g`) and diagnostic outputs (`y` and optional detailed outputs).
-- **`jac_dfn_pre.m`**: builds state‑independent parts of the Jacobian matrices used in Newton’s method.
-- **`jac_dfn.m`**: completes the Jacobian by adding state‑dependent terms (e.g. Butler–Volmer kinetics, temperature coupling, electrolyte conductivity).
-- **`load_DFN_params.m`**: assembles the parameter struct `p`, discretization sizes, precomputes matrices (`c_s_mats`, `c_e_mats`, `phi_s_mats`, `i_e_mats`, `phi_e_mats`), initializes `x0`, `z0`, and `y0`.
-- **`parse_x.m`, `parse_y.m`, `parse_z.m`**: utilities to unpack the stacked state/output histories into structured physical fields (concentrations, potentials, fluxes, etc.).
-- **`potentials.m`**: convenience wrapper around `dae_dfn` to extract detailed potential‑related quantities (overpotentials, reference potentials, IR drops, electrolyte contributions).
-- **`c_s_mats.m`**: builds state‑space matrices for solid diffusion (Pade approximation) in both electrodes.
-- **`i_e_mats.m`**: builds matrices for electrolyte current dynamics in each region.
-- **`phi_s_mats.m`**: assembles matrices for solid‑phase potential in electrodes.
-- **`phi_e_mats.m`**: assembles matrices for electrolyte potential (including boundary conditions).
-- **`blkdiagFast.m`**: efficient block‑diagonal concatenation helper used when assembling Jacobians and diffusion operators.
-- **`symsubsden.m`, `symsubsnum.m`**: helper routines used for symbolic substitutions when generating or manipulating CasADi symbolic expressions (not typically called directly in simulations).
-
-The overall simulation flow is:
-
-1. **Setup**: `sim_DFN_CC.m` or `sim_DFN_CCCV.m` calls `load_DFN_params.m` (and adds `DFN`/`param` to the MATLAB path).
-2. **Precomputation**: `load_DFN_params.m` calls the various `*_mats.m` builders and `jac_dfn_pre.m`, and evaluates `dae_dfn.m` once at `(x0, z0)` to create `y0`.
-3. **Time stepping**: the sim script builds a current profile `I(k)` and, at each step, calls `step_dfn.m` with the appropriate `Cur_vec`.
-4. **Solving DAEs**: `step_dfn.m` invokes `cn_dfn.m`, which repeatedly calls `dae_dfn.m` and `jac_dfn.m` until convergence.
-5. **Post‑processing**: after the loop, the sim script uses `parse_x.m`, `parse_z.m`, and `parse_y.m` to unpack the trajectories and saves them into the `results` directory.
-
-With this structure, you can either use the provided `sim_DFN_CC.m` / `sim_DFN_CCCV.m` as templates or directly integrate `step_dfn.m` into your own closed‑loop or agent‑driven simulations.
-
-
-# Using the SPMe model
-
-The Single Particle Model with electrolyte (SPMe) provides a **reduced‑order approximation** of the DFN model, retaining key physics (solid diffusion in each electrode, 1‑D electrolyte dynamics, voltage and SOC) while being significantly faster and easier to use in control and estimation.
-
-- **Key differences from DFN**
-  - Each electrode is represented by a **single representative particle** (rather than many particles along the electrode thickness).
-  - The electrolyte is still modeled along the through‑thickness direction as like DFN.
-  - The model is implemented in a compact CasADi‑based class `SPMe/SPMe.m` that exposes a discrete‑time **step interface**.
-  - Plating overpotential is summarized by a **scalar** `eta_pl` output (see `SPMe.m`), as opposed to the spatially distributed `eta_pl` in the DFN.
-
-- **Basic usage**
-  - The script `sim_SPMe_CC.m` shows how to configure and run the SPMe:
+`sim_profile_LGM50` accepts one profile definition and returns one simulation segment.
 
 ```matlab
-import casadi.*
-addpath("SPMe"); addpath("param");
-
-% Load parameters and initial condition (similar arguments to DFN)
-Nr    = 30;
-Nxn   = 70; Nxs = 35; Nxp = 70;
-delta_t = 1.0;
-p = load_SPMe_params(init_SOC, t_amb, load_init, Nr, delta_t, ...
-                     Nxn, Nxs, Nxp, disable_thermal, disable_sei);
-
-% Build SPMe system object and initialize state
-spme_ss = SPMe(p, 'idas');
-x = p.x0;
-
-for k = 1:Nt-1
-    I_k = I(k);  % applied current at time step k
-    [x, y, c_ss_n, c_ss_p, c_ex] = spme_ss.step(x, I_k);
-    V   = y(1);  % terminal voltage
-    SOC = y(2);  % SOC
-    eta_pl = y(3);  % negative electrode plating overpotential (scalar)
-end
+sim = sim_profile_LGM50(model_name, init_soc, profile_def, ...
+    'Nxn', 20, 'Nxs', 10, 'Nxp', 20, 'Nr', 20, ...
+    'DeltaT', 1, 'Tamb', 25, ...
+    'DegradationModel', 'none', ...
+    'ElectrolyteModel', 'fdm', ...
+    'UseElectrolyteActivity', false, ...
+    'EnableLithiumPlating', false, ...
+    'EnableAnodePorosityLoss', false, ...
+    'InitialState', struct(), ...
+    'SPMeOutputs', {}, ...
+    'SaveOutput', false, 'OutputFile', '');
 ```
 
-For more detailed SPMe equations and derivations, refer to Scott Moura’s original SPMeT repository [`SPMeT`](https://github.com/scott-moura/SPMeT).
+Important options:
 
+- `Nxn`, `Nxs`, `Nxp`, `Nr`: discretization settings for electrochemical models.
+- `DeltaT`: fixed simulation timestep `[s]`.
+- `Tamb`: ambient temperature `[degC]`.
+- `ECMOrder`: number of RC branches for ECM.
+- `DegradationModel`: SPMe degradation model.
+- `ElectrolyteModel`: SPMe electrolyte dynamics, `fdm` or `fvm`.
+- `UseElectrolyteActivity`: include electrolyte activity correction in SPMe electrolyte-polarization voltage. Default is `false`.
+- `InitialState`: continue from a previous terminal state, e.g. `struct('x', x_last)` for SPMe.
+- `SPMeOutputs`: optional SPMe diagnostics to store in `sim.spme_outputs`.
+- `VEnd`: custom voltage termination for a segment.
+- `SaveOutput` / `OutputFile`: save `sim` to a `.mat` file.
 
-# Using the ECM (Equivalent Circuit Model)
+## Sequence Options
 
-The ECM is a **lumped, low‑order model** that represents the battery as an open‑circuit voltage source plus one or more RC branches, parameterized as a function of SOC and temperature.
-It is intended for applications where **computational efficiency** is critical (e.g., real‑time BMS) and detailed electrochemical states are not required.
-
-- **Model structure**
-  - Implemented in `ECM/ECM.m` with parameters loaded by `load_ECM_params.m`.
-  - Supports different orders (number of RC branches) via the `n_order` argument in `sim_ECM_CC.m`.
-  - Outputs are primarily **terminal voltage** and **SOC**, with internal RC states capturing dynamic polarization.
-
-- **Basic usage**
-  - The script `sim_ECM_CC.m` shows a typical workflow:
+`sim_profile_sequence_LGM50` runs segments continuously by passing the terminal state of each segment into the next segment.
 
 ```matlab
-import casadi.*
-addpath("ECM"); addpath("param");
-
-n_order = 2;             % number of RC branches
-CRate   = -1.0;          % charging/discharging C‑rate
-delta_t = 1.0;
-
-% Load parameters and ECM system object
-[p, ecm_p, ocv_p] = load_ECM_params(init_SOC, n_order);
-ecm_ss = ECM(p, ocv_p, ecm_p, n_order, 'idas');
-
-% Build current profile I(k) (see sim_ECM_CC.m)
-for k = 1:Nt-1
-    I_k = I(k);
-    [x, V] = ecm_ss.step(x, I_k);   % x: [SOC; RC states; ...], V: terminal voltage
-end
+sim = sim_profile_sequence_LGM50(model_name, init_soc, profile_sequence, ...
+    'Repeat', 1, ...
+    'Nxn', 10, 'Nxs', 5, 'Nxp', 10, 'Nr', 15, ...
+    'DeltaT', 1, 'Tamb', 25, ...
+    'DegradationModel', 'none', ...
+    'ElectrolyteModel', 'fdm', ...
+    'EnableLithiumPlating', false, ...
+    'EnableAnodePorosityLoss', false, ...
+    'VMin', [], 'VMax', [], ...
+    'ShowProgress', true, ...
+    'MemoryLight', false, ...
+    'InitialState', struct(), ...
+    'CheckpointFile', '', ...
+    'SPMeOutputs', {}, ...
+    'SaveOutput', false, 'OutputFile', '');
 ```
+
+Additional sequence-specific options:
+
+- `Repeat`: repeat the full `profile_sequence`.
+- `VMin` / `VMax`: truncate each segment if voltage leaves the requested window.
+- `ShowProgress`: show a waitbar.
+- `MemoryLight`: omit large history fields from the aggregate sequence output while keeping core signals and requested SPMe outputs.
+- `CheckpointFile`: save a warm-start checkpoint at the end of each completed repeat. The checkpoint contains the aggregate `sim`, the last segment, terminal state, terminal SOC/voltage, and sequence metadata.
+
+## Warm Starts And Checkpoints
+
+For manual continuation, pass a terminal state through `InitialState`:
+
+```matlab
+sim1 = sim_profile_LGM50('SPMe', 0.2, {'CC', -1}, ...
+    'DegradationModel', 'safari');
+
+state = struct('x', sim1.x(:, end));
+
+sim2 = sim_profile_LGM50('SPMe', sim1.soc(end), {'CC', 1}, ...
+    'DegradationModel', 'safari', ...
+    'InitialState', state);
+```
+
+For long sequence runs, use `CheckpointFile`:
+
+```matlab
+sim = sim_profile_sequence_LGM50('SPMe', 0.1, {'CC', -1, 'CC', 1}, ...
+    'Repeat', 100, ...
+    'DegradationModel', 'safari', ...
+    'EnableLithiumPlating', true, ...
+    'EnableAnodePorosityLoss', true, ...
+    'CheckpointFile', 'results/SPMe/long_run_checkpoint.mat');
+```
+
+The saved checkpoint can be loaded and used to construct an `InitialState` for later continuation.
+
+## Outputs
+
+Simulation functions return a struct `sim`.
+
+Common fields:
+
+- `time`, `current`, `voltage`, `soc`
+- `model`, `profile`, `p`
+- `terminated_early`, `termination_reason`, `t_last`
+- `init_soc_input`, `init_voltage_from_soc`, `init_csn0`, `init_csp0`
+
+Sequence-only fields:
+
+- `profile_definition`, `profile_sequence_input`, `repeat_count`
+- `segment_index`, `segment_cycle`, `capacity_cycle`
+- `segment_log`, `capacity_cycle_log`
+
+Model-specific fields:
+
+- SPMe: `x`, `y`, `c_s_n`, `c_s_p`, `c_e`, and optional degradation fields such as `delta_sei`, `delta_li`, `epsilon_e_n`
+- DFN: `x`, `z`, `y`, `c_s_n_pade`, `c_s_p_pade`, `c_e`, `temperature`
+- ECM: `x`, `ocv_p`, `ecm_p`
+
+If `SPMeOutputs` is requested, additional named time series are stored under `sim.spme_outputs`.
 
 
 # LG M50 cell description
@@ -334,7 +261,7 @@ The models in this repository are parameterized for **LG’s M50** lithium‑ion
 
 - **Parameterization in this repository**
   - Geometric, transport, and kinetic parameters are defined in `param/params_LGM50.m`. Those parameters are based on [J. Electrochem. Soc. 167, 110559 (2020)](https://iopscience.iop.org/article/10.1149/1945-7111/ab9050) and [Phys. Chem. Chem. Phys. 24, 8661–8677 (2022)](https://pubs.rsc.org/en/content/articlelanding/2022/cp/d2cp00417h).
-  - Initial condition files in `init_models/` and data in `param/` (e.g., OCV curves) are calibrated so that DFN, SPMe, and ECM simulations reflect the voltage, SOC, and dynamic behavior of the LG M50 cell under typical operating conditions.
+  - Initial states are generated from `init_cs` and the parameter set in `param/` (including OCV functions), so that DFN, SPMe, and ECM simulations reflect the voltage, SOC, and dynamic behavior of the LG M50 cell under typical operating conditions.
 
 
 # References

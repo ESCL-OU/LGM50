@@ -40,7 +40,7 @@ run param/params_LGM50
 % p.T_amb = 25 + 273.15; 
 p.T_amb = t_amb + 273.15;
 p.disable_thermal = true;
-p.disable_sei = true;
+p.degradation_model = 'none';
 %% Input charge/discharge Current Data %%
 % % Current | Positive <=> Discharge, Negative <=> Charge
 

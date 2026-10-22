@@ -7,6 +7,23 @@ function [f_x_full, f_z_full, g_x_full, g_z_full, varargout] = jac_dfn(x,z,Cur,f
 %% Compute A/m^2
 I = Cur/p.Area_ref;
 
+use_degradation = isfield(p, 'dfn_degradation_enabled') && p.dfn_degradation_enabled;
+
+if isfield(p, 'dfn_jacobian_mode') && ~isempty(p.dfn_jacobian_mode)
+    dfn_jacobian_mode = lower(char(p.dfn_jacobian_mode));
+else
+    dfn_jacobian_mode = 'padded_analytic';
+end
+
+if use_degradation && strcmp(dfn_jacobian_mode, 'finite_difference')
+    [f_x_full, f_z_full, g_x_full, g_z_full] = dfn_finite_difference_jacobian(x, z, Cur, p);
+    if nargout > 4
+        varargout{1} = zeros(numel(x), 1);
+        varargout{2} = zeros(numel(z), 1);
+    end
+    return;
+end
+
 %% Parse out states
 Ncsn = p.PadeOrder * (p.Nxn-1);
 Ncsp = p.PadeOrder * (p.Nxp-1);
@@ -73,7 +90,7 @@ jp = z(ind_jp);
 T = x(end);
 
 % Preallocate B matrices
-B1 = zeros(Nc+1,1);
+B1 = zeros(numel(x),1);
 B2 = zeros(Nz,1);
 
 %% Li Diffusion in Electrolyte Phase: c_e(x,t)
@@ -351,10 +368,16 @@ g_z(ind_jn,ind_jn) = diag(df6Jn);
 g_z(ind_jp,ind_jp) = diag(df6Jp);
 
 %%
-f_x_full = f_x;
-f_z_full = f_z;
-g_x_full = g_x;
-g_z_full = g_z;
+%% Add approximate padded degradation Jacobian
+if use_degradation && strcmp(dfn_jacobian_mode, 'padded_analytic')
+    [f_x, f_z, g_x, g_z] = dfn_apply_padded_degradation_jacobian(f_x, f_z, g_x, g_z, x, z, Cur, p);
+end
+
+%%
+f_x_full = sparse(f_x);
+f_z_full = sparse(f_z);
+g_x_full = sparse(g_x);
+g_z_full = sparse(g_z);
 
 % spy(Jac)
 % pause;
@@ -362,4 +385,100 @@ g_z_full = g_z;
 if(nargout > 4)
     varargout{1} = B1;
     varargout{2} = B2;
+end
+end
+
+function [f_x, f_z, g_x, g_z] = dfn_finite_difference_jacobian(x, z, Cur, p)
+    [f0, g0] = dae_dfn(x, z, Cur, p);
+    nx = numel(x);
+    nz = numel(z);
+    nf = numel(f0);
+    ng = numel(g0);
+
+    f_x = zeros(nf, nx);
+    g_x = zeros(ng, nx);
+    f_z = zeros(nf, nz);
+    g_z = zeros(ng, nz);
+
+    for ii = 1:nx
+        xp = x;
+        h = sqrt(eps) * max(1, abs(x(ii)));
+        xp(ii) = xp(ii) + h;
+        [fp, gp] = dae_dfn(xp, z, Cur, p);
+        f_x(:, ii) = (fp - f0) ./ h;
+        g_x(:, ii) = (gp - g0) ./ h;
+    end
+
+    for ii = 1:nz
+        zp = z;
+        h = sqrt(eps) * max(1, abs(z(ii)));
+        zp(ii) = zp(ii) + h;
+        [fp, gp] = dae_dfn(x, zp, Cur, p);
+        f_z(:, ii) = (fp - f0) ./ h;
+        g_z(:, ii) = (gp - g0) ./ h;
+    end
+
+    f_x = sparse(f_x);
+    f_z = sparse(f_z);
+    g_x = sparse(g_x);
+    g_z = sparse(g_z);
+end
+
+function [f_x, f_z, g_x, g_z] = dfn_apply_padded_degradation_jacobian(f_x, f_z, g_x, g_z, x, z, Cur, p)
+%DFN_APPLY_PADDED_DEGRADATION_JACOBIAN
+% Fast approximate Jacobian for DFN degradation.
+%
+% Important:
+%   This does NOT remove degradation physics.
+%   dae_dfn still evaluates full SEI, Li plating, porosity loss,
+%   electrolyte source scaling, and dynamic boundary effects.
+%
+%   This only freezes the degradation derivatives in Newton's Jacobian.
+%   Because degradation states evolve slowly per timestep, this is usually
+%   much faster and sufficiently accurate for long aging simulations.
+
+    Ncsn = p.PadeOrder * (p.Nxn - 1);
+    Ncsp = p.PadeOrder * (p.Nxp - 1);
+    Nce  = p.Nx - 3;
+    Nc   = Ncsn + Ncsp + Nce;
+    Nn   = p.Nxn - 1;
+
+    nx = numel(x);
+    nz = numel(z);
+
+    if size(f_x,1) ~= nx || size(f_x,2) ~= nx
+        error('padded_analytic: f_x size mismatch. Expected %d x %d, got %d x %d.', ...
+            nx, nx, size(f_x,1), size(f_x,2));
+    end
+    if size(f_z,1) ~= nx || size(f_z,2) ~= nz
+        error('padded_analytic: f_z size mismatch. Expected %d x %d, got %d x %d.', ...
+            nx, nz, size(f_z,1), size(f_z,2));
+    end
+    if size(g_x,1) ~= nz || size(g_x,2) ~= nx
+        error('padded_analytic: g_x size mismatch. Expected %d x %d, got %d x %d.', ...
+            nz, nx, size(g_x,1), size(g_x,2));
+    end
+    if size(g_z,1) ~= nz || size(g_z,2) ~= nz
+        error('padded_analytic: g_z size mismatch. Expected %d x %d, got %d x %d.', ...
+            nz, nz, size(g_z,1), size(g_z,2));
+    end
+
+    ind_delta_sei_n      = Nc+1:Nc+Nn;
+    ind_delta_li_n       = Nc+Nn+1:Nc+2*Nn;
+    ind_epsilon_e_n_dyn  = Nc+2*Nn+1:Nc+3*Nn;
+
+    % Freeze degradation derivatives in Newton Jacobian.
+    % This keeps F1_x = -I for these states in Crank-Nicolson, which is
+    % stable and avoids expensive finite-difference Jacobian calls.
+    f_x(ind_delta_sei_n, :) = 0;
+    f_x(ind_delta_li_n, :) = 0;
+    f_x(ind_epsilon_e_n_dyn, :) = 0;
+
+    f_z(ind_delta_sei_n, :) = 0;
+    f_z(ind_delta_li_n, :) = 0;
+    f_z(ind_epsilon_e_n_dyn, :) = 0;
+
+    % Keep algebraic Jacobian exactly as Scott's analytic DFN Jacobian.
+    % Degradation affects algebraic residuals through dae_dfn residual values,
+    % but cross-derivatives are frozen in this approximate mode.
 end
